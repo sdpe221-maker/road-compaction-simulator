@@ -1,0 +1,352 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+
+  font-family:
+      Arial,
+      Helvetica,
+      sans-serif;
+
+  background: #dce7ef;
+  color: #10243b;
+}
+
+/* --------------------------------------------------
+ CANVAS 3D
+-------------------------------------------------- */
+
+canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* --------------------------------------------------
+ PANEL
+-------------------------------------------------- */
+
+#control-panel {
+
+  position: fixed;
+
+  top: 20px;
+  left: 20px;
+
+  width: 350px;
+
+  max-height: calc(100vh - 40px);
+
+  overflow-y: auto;
+
+  padding: 20px;
+
+  border-radius: 18px;
+
+  background: rgba(
+      12,
+      31,
+      51,
+      0.96
+  );
+
+  color: white;
+
+  box-shadow:
+      0 15px 40px
+      rgba(0, 0, 0, 0.35);
+
+  z-index: 20;
+}
+
+/* --------------------------------------------------
+ MARCA
+-------------------------------------------------- */
+
+.brand {
+
+  margin-bottom: 18px;
+
+  padding-bottom: 14px;
+
+  border-bottom:
+      1px solid
+      rgba(255,255,255,0.2);
+}
+
+.brand strong {
+
+  display: block;
+
+  font-size: 27px;
+
+  font-weight: 800;
+
+  color: #ffffff;
+}
+
+.brand span {
+
+  display: block;
+
+  margin-top: 5px;
+
+  font-size: 13px;
+
+  color: #cbd9e6;
+}
+
+/* --------------------------------------------------
+ CAMPOS
+-------------------------------------------------- */
+
+.field {
+
+  margin-bottom: 14px;
+}
+
+.field label {
+
+  display: block;
+
+  margin-bottom: 6px;
+
+  font-size: 13px;
+
+  font-weight: 700;
+
+  color: #ffffff;
+}
+
+.field input {
+
+  width: 100%;
+
+  padding: 11px 12px;
+
+  border-radius: 8px;
+
+  border:
+      1px solid
+      #71859b;
+
+  background: #f7fafc;
+
+  color: #10243b;
+
+  font-size: 15px;
+
+  outline: none;
+}
+
+.field input:focus {
+
+  border-color: #2196f3;
+
+  box-shadow:
+      0 0 0 3px
+      rgba(33,150,243,0.25);
+}
+
+/* --------------------------------------------------
+ BOTONES
+-------------------------------------------------- */
+
+button {
+
+  width: 100%;
+
+  padding: 13px;
+
+  margin-top: 8px;
+
+  border: none;
+
+  border-radius: 9px;
+
+  background:
+      linear-gradient(
+          135deg,
+          #1976d2,
+          #1565c0
+      );
+
+  color: white;
+
+  font-size: 14px;
+
+  font-weight: 800;
+
+  cursor: pointer;
+
+  transition:
+      transform 0.15s,
+      filter 0.15s;
+}
+
+button:hover {
+
+  filter: brightness(1.12);
+
+  transform: translateY(-1px);
+}
+
+button:disabled {
+
+  opacity: 0.5;
+
+  cursor: not-allowed;
+
+  transform: none;
+}
+
+button.secondary {
+
+  background: #465c70;
+}
+
+/* --------------------------------------------------
+ RESULTADO
+-------------------------------------------------- */
+
+#status-box {
+
+  margin-top: 17px;
+
+  padding: 15px;
+
+  border-radius: 10px;
+
+  background: #26394c;
+
+  color: #ffffff;
+
+  font-size: 13px;
+
+  line-height: 1.45;
+}
+
+#status-box strong {
+
+  color: #ffffff;
+}
+
+#status-box p {
+
+  margin: 8px 0;
+}
+
+#status-box ul {
+
+  padding-left: 20px;
+}
+
+#status-box li {
+
+  margin-bottom: 5px;
+}
+
+/* --------------------------------------------------
+ RESULTADO CORRECTO
+-------------------------------------------------- */
+
+#status-box.good {
+
+  background: #176b45;
+
+  border:
+      2px solid
+      #3bd58b;
+}
+
+/* --------------------------------------------------
+ RESULTADO INCORRECTO
+-------------------------------------------------- */
+
+#status-box.bad {
+
+  background: #8e2525;
+
+  border:
+      2px solid
+      #ff7070;
+}
+
+/* --------------------------------------------------
+ CHECK
+-------------------------------------------------- */
+
+.big-check {
+
+  width: 48px;
+  height: 48px;
+
+  display: flex;
+
+  align-items: center;
+  justify-content: center;
+
+  margin-bottom: 10px;
+
+  border-radius: 50%;
+
+  background: #36c982;
+
+  color: white;
+
+  font-size: 30px;
+
+  font-weight: 900;
+}
+
+/* --------------------------------------------------
+ SCROLL
+-------------------------------------------------- */
+
+#control-panel::-webkit-scrollbar {
+
+  width: 7px;
+}
+
+#control-panel::-webkit-scrollbar-track {
+
+  background: #162b3e;
+}
+
+#control-panel::-webkit-scrollbar-thumb {
+
+  background: #4d6680;
+
+  border-radius: 10px;
+}
+
+/* --------------------------------------------------
+ RESPONSIVE
+-------------------------------------------------- */
+
+@media (max-width: 700px) {
+
+  #control-panel {
+
+      width: calc(100% - 24px);
+
+      left: 12px;
+      top: 12px;
+
+      max-height: 55vh;
+
+      padding: 15px;
+  }
+
+  .brand strong {
+
+      font-size: 22px;
+  }
+}
