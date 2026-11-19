@@ -350,3 +350,21 @@ button.secondary {
       font-size: 22px;
   }
 }
+/* CONTADOR DE PASADAS */
+
+#progress-box {
+  position: fixed;
+bottom: 20px;
+right: 20px;
+width: 260px;
+z-index: 1000;
+  margin-top: 12px;
+  padding: 12px;
+  background: #e5efff;
+  color: #12365b;
+  border: 2px solid #4385db;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 800;
+  text-align: center;
+}
