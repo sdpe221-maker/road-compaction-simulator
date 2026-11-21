@@ -2,1598 +2,3032 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import './style.css';
 
-// ============================================================
-// GEOCOMPACT
-// ROAD COMPACTION SIMULATOR 3D
-// Simulador didáctico de compactación vial
-// ============================================================
+/* ==========================================================
+   GEOCOMPACT
+   ROAD COMPACTION SIMULATOR 3D
+   Simulación didáctica de construcción y recuperación vial
+========================================================== */
 
-// ------------------------------------------------------------
-// ESCENA
-// ------------------------------------------------------------
+const app = document.getElementById('app') || document.body;
 
-// GUARDAR GEOMETRÍA ORIGINAL DE LA CARRETERA
-let originalSurfacePositions = null;
+const ROAD = {
+  width: 12,
+  length: 80,
+  startZ: -40,
+  endZ: 40
+};
 
-// ============================================================
-// ESCENA
-// ============================================================
+const BASE_TOP = 2.10;
+const ASPHALT_TOP = 2.43;
+
+let stage = 'base';
+let isRunning = false;
+let simulationFinished = false;
+let completedPasses = 0;
+let repairPhaseTime = 0;
+let repairTestReady = false;
+
+let direction = 1;       // Dirección del rodillo principal
+let repairDirection = 1; // Dirección durante la recompactación
+
+let pavingProgress = 0;
+
+let currentGrade = 93.18;
+let minimumGrade = 95;
+let passes = 6;
+
+let geoData = {
+  proyecto: 'Mejoramiento vial - Caso 5',
+  rhoSeca: 1.9103,
+  rhoStd: 1.82,
+  wStd: 12.5,
+  rhoMod: 2.05,
+  wMod: 8.5,
+  humedad: 9.2,
+  exigencia: 95,
+  pasadas: 6,
+  espesorCm: 20,
+  referencia: 'Proctor modificado',
+  gradeProvided: null
+};
+
+let metrics = {};
+
+let failureGroup = null;
+let solutionGroup = null;
+
+let roller;
+let asphaltPaver;
+let asphaltRoller;
+
+let scarifier;
+let waterTruck;
+let grader;
+let densityTechnician;
+
+let trafficCars = [];
+let asphaltChunks = [];
+let rotatingParts = [];
+let asphaltRollerParts = [];
+
+let roadMarkings;
+
+const clock = new THREE.Timer();
+
+// ==========================================================
+// ESCENA THREE.JS
+// ==========================================================
+
 const scene = new THREE.Scene();
 
-scene.background = new THREE.Color(0x9bd7f5);
-
-scene.fog = new THREE.Fog(0x9bd7f5, 70, 180);
-
-// ------------------------------------------------------------
-// CÁMARA
-// ------------------------------------------------------------
+scene.background = new THREE.Color(0xb9d8e8);
+scene.fog = new THREE.Fog(0xb9d8e8, 90, 180);
 
 const camera = new THREE.PerspectiveCamera(
-    55,
-    window.innerWidth / window.innerHeight,
-    0.1,
-    500
+  48,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  400
 );
 
-camera.position.set(24, 18, 28);
-
-// ------------------------------------------------------------
-// RENDERER
-// ------------------------------------------------------------
+camera.position.set(32, 27, 38);
 
 const renderer = new THREE.WebGLRenderer({
-    antialias: true
+  antialias: true,
+  powerPreference: 'high-performance'
 });
-
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
 renderer.setSize(window.innerWidth, window.innerHeight);
 
+renderer.setPixelRatio(
+  Math.min(window.devicePixelRatio || 1, 2)
+);
+
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.shadowMap.type = THREE.PCFShadowMap;
 
-document.body.appendChild(renderer.domElement);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
 
-// ------------------------------------------------------------
-// CONTROLES
-// ------------------------------------------------------------
+app.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 
 controls.enableDamping = true;
-controls.dampingFactor = 0.06;
+controls.dampingFactor = 0.055;
+controls.target.set(0, 2, 0);
 
 controls.minDistance = 12;
-controls.maxDistance = 80;
-
+controls.maxDistance = 100;
 controls.maxPolarAngle = Math.PI * 0.48;
 
-// ------------------------------------------------------------
+// ==========================================================
 // ILUMINACIÓN
-// ------------------------------------------------------------
+// ==========================================================
 
-const hemiLight = new THREE.HemisphereLight(
-    0xffffff,
-    0x667755,
-    2.2
+scene.add(
+  new THREE.HemisphereLight(
+    0xeaf7ff,
+    0x68754f,
+    2.1
+  )
 );
 
-scene.add(hemiLight);
-
-const sun = new THREE.DirectionalLight(
-    0xffffff,
-    3
+const sunlight = new THREE.DirectionalLight(
+  0xfff1d5,
+  3
 );
 
-sun.position.set(30, 40, 20);
+sunlight.position.set(-30, 50, 25);
 
-sun.castShadow = true;
+sunlight.castShadow = true;
 
-sun.shadow.mapSize.width = 2048;
-sun.shadow.mapSize.height = 2048;
+sunlight.shadow.mapSize.set(2048, 2048);
 
-sun.shadow.camera.left = -60;
-sun.shadow.camera.right = 60;
-sun.shadow.camera.top = 60;
-sun.shadow.camera.bottom = -60;
+sunlight.shadow.camera.left = -65;
+sunlight.shadow.camera.right = 65;
+sunlight.shadow.camera.top = 65;
+sunlight.shadow.camera.bottom = -65;
 
-scene.add(sun);
+scene.add(sunlight);
 
-// ------------------------------------------------------------
-// VARIABLES
-// ------------------------------------------------------------
+// ==========================================================
+// MATERIALES
+// ==========================================================
 
-let roller;
-let rollerWheels = [];
+function material(color, roughness = 0.85, metalness = 0) {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness,
+    metalness
+  });
+}
 
-let roadSurface;
-let roadBase;
-let roadSubbase;
+const soilMaterial = material(0x98704b);
+const subbaseMaterial = material(0xb59a76);
+const baseMaterial = material(0xc5a77e);
 
-let isRunning = false;
-let animationProgress = 0;
+const asphaltMaterial = material(0x34383b, 0.85);
+const asphaltFreshMaterial = material(0x55585b, 0.9);
 
-let completedPasses = 0;
-let travelDirection = 1;
+const yellowMaterial = material(0xf0b619, 0.58);
+const darkMaterial = material(0x22282d, 0.9);
+const steelMaterial = material(0x68747c, 0.4, 0.6);
 
-const ROLLER_START_Z = -30;
-const ROLLER_END_Z = 30;
-
-let deformationAmount = 0;
-
-let currentGrade = 93.18;
-let minimumGrade = 95;
-let passes = 8;
-let layerThickness = 14;
-
-let simulationFinished = false;
-
-// ------------------------------------------------------------
+// ==========================================================
 // TEXTURAS PROCEDURALES
-// ------------------------------------------------------------
+// ==========================================================
 
-function createGroundTexture() {
+function createTexture(baseColor, colors, count = 5000) {
 
-    const canvas = document.createElement('canvas');
+  const canvas = document.createElement('canvas');
 
-    canvas.width = 512;
-    canvas.height = 512;
+  canvas.width = 512;
+  canvas.height = 512;
 
-    const ctx = canvas.getContext('2d');
+  const ctx = canvas.getContext('2d');
 
-    ctx.fillStyle = '#6f9d57';
-    ctx.fillRect(0, 0, 512, 512);
+  ctx.fillStyle = baseColor;
+  ctx.fillRect(0, 0, 512, 512);
 
-    for (let i = 0; i < 1800; i++) {
+  for (let i = 0; i < count; i++) {
 
-        const x = Math.random() * 512;
-        const y = Math.random() * 512;
+    ctx.fillStyle = colors[
+      Math.floor(Math.random() * colors.length)
+    ];
 
-        const size = Math.random() * 4 + 1;
+    ctx.beginPath();
 
-        ctx.fillStyle =
-            Math.random() > 0.5
-                ? '#587f48'
-                : '#83aa66';
+    ctx.arc(
+      Math.random() * 512,
+      Math.random() * 512,
+      1 + Math.random() * 3,
+      0,
+      Math.PI * 2
+    );
 
-        ctx.fillRect(x, y, size, size);
-    }
+    ctx.fill();
+  }
 
-    const texture = new THREE.CanvasTexture(canvas);
+  const texture = new THREE.CanvasTexture(canvas);
 
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
 
-    texture.repeat.set(10, 10);
+  texture.anisotropy =
+    renderer.capabilities.getMaxAnisotropy();
 
-    return texture;
+  return texture;
 }
 
-function createSoilTexture() {
+const soilTexture = createTexture(
+  '#98704b',
+  ['#795638', '#b58a5e', '#8a6745']
+);
 
-    const canvas = document.createElement('canvas');
+const gravelTexture = createTexture(
+  '#a98760',
+  ['#765b40', '#c4a27a', '#92714e', '#d0b48c']
+);
 
-    canvas.width = 512;
-    canvas.height = 512;
+const asphaltTexture = createTexture(
+  '#34383b',
+  ['#55585a', '#202426', '#777777', '#44484a']
+);
 
-    const ctx = canvas.getContext('2d');
+const grassTexture = createTexture(
+  '#91aa70',
+  ['#78965d', '#b1c58a', '#6f8a52']
+);
 
-    ctx.fillStyle = '#a86d3c';
-    ctx.fillRect(0, 0, 512, 512);
-
-    for (let i = 0; i < 2500; i++) {
-
-        const x = Math.random() * 512;
-        const y = Math.random() * 512;
-
-        const r = Math.random() * 3 + 1;
-
-        ctx.beginPath();
-
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-
-        ctx.fillStyle =
-            Math.random() > 0.5
-                ? '#774623'
-                : '#c58a50';
-
-        ctx.fill();
-    }
-
-    const texture = new THREE.CanvasTexture(canvas);
-
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-
-    texture.repeat.set(7, 4);
-
-    return texture;
-}
-
-const groundTexture = createGroundTexture();
-const soilTexture = createSoilTexture();
-
-// ------------------------------------------------------------
+// ==========================================================
 // TERRENO
-// ------------------------------------------------------------
+// ==========================================================
 
-const groundGeometry = new THREE.PlaneGeometry(
-    180,
-    180
+const terrain = new THREE.Mesh(
+  new THREE.PlaneGeometry(220, 220),
+  new THREE.MeshStandardMaterial({
+    map: grassTexture,
+    roughness: 1
+  })
 );
 
-const groundMaterial = new THREE.MeshStandardMaterial({
-    map: groundTexture
-});
+terrain.rotation.x = -Math.PI / 2;
+terrain.position.y = -0.1;
+terrain.receiveShadow = true;
 
-const ground = new THREE.Mesh(
-    groundGeometry,
-    groundMaterial
+scene.add(terrain);
+
+// ==========================================================
+// VEGETACIÓN
+// ==========================================================
+
+function addTree(x, z, scale = 1) {
+
+  const group = new THREE.Group();
+
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(
+      0.14 * scale,
+      0.22 * scale,
+      1.7 * scale,
+      9
+    ),
+    material(0x68462d)
+  );
+
+  trunk.position.y = 0.85 * scale;
+
+  group.add(trunk);
+
+  const crown = new THREE.Mesh(
+    new THREE.SphereGeometry(
+      1 * scale,
+      16,
+      14
+    ),
+    material(0x397c43)
+  );
+
+  crown.position.y = 2.1 * scale;
+
+  crown.scale.set(1, 1.15, 0.9);
+
+  group.add(crown);
+
+  group.position.set(x, 0, z);
+
+  group.traverse(object => {
+    if (object.isMesh) object.castShadow = true;
+  });
+
+  scene.add(group);
+}
+
+for (let z = -42; z <= 42; z += 10) {
+
+  addTree(-12, z, 0.8 + Math.random() * 0.4);
+  addTree(12, z + 3, 0.8 + Math.random() * 0.4);
+}
+
+// ==========================================================
+// CARRETERA Y CAPAS GRANULARES
+// ==========================================================
+
+function addLayer(name, width, height, y, texture) {
+
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      width,
+      height,
+      ROAD.length
+    ),
+    new THREE.MeshStandardMaterial({
+      map: texture,
+      roughness: 1
+    })
+  );
+
+  mesh.name = name;
+
+  mesh.position.set(0, y, 0);
+
+  mesh.receiveShadow = true;
+  mesh.castShadow = true;
+
+  scene.add(mesh);
+
+  return mesh;
+}
+
+addLayer(
+  'Subrasante',
+  14,
+  0.9,
+  0.45,
+  soilTexture
 );
 
-ground.rotation.x = -Math.PI / 2;
-
-ground.receiveShadow = true;
-
-scene.add(ground);
-
-// ------------------------------------------------------------
-// CARRETERA
-// ------------------------------------------------------------
-
-function createRoad() {
-
-    const roadWidth = 12;
-    const roadLength = 80;
-
-    // Subrasante
-    const subbaseGeometry = new THREE.BoxGeometry(
-        roadWidth + 2,
-        1.2,
-        roadLength
-    );
-
-    const subbaseMaterial = new THREE.MeshStandardMaterial({
-        map: soilTexture
-    });
-
-    roadSubbase = new THREE.Mesh(
-        subbaseGeometry,
-        subbaseMaterial
-    );
-
-    roadSubbase.position.y = 0.6;
-
-    roadSubbase.receiveShadow = true;
-
-    scene.add(roadSubbase);
-
-
-    // Base granular
-    const baseGeometry = new THREE.BoxGeometry(
-        roadWidth,
-        0.8,
-        roadLength
-    );
-
-    const baseMaterial = new THREE.MeshStandardMaterial({
-        color: 0xc29261
-    });
-
-    roadBase = new THREE.Mesh(
-        baseGeometry,
-        baseMaterial
-    );
-
-    roadBase.position.y = 1.55;
-
-    roadBase.receiveShadow = true;
-
-    scene.add(roadBase);
-
-
-    // Capa compactada
-// CAPA COMPACTADA CON MAYOR NIVEL DE DETALLE
-const surfaceGeometry = new THREE.BoxGeometry(
-    roadWidth - 0.3,
-    0.65,
-    roadLength,
-    8,
-    1,
-    80
+addLayer(
+  'Subbase granular',
+  13.3,
+  0.7,
+  1.25,
+  gravelTexture
 );
-// GUARDAR POSICIONES ORIGINALES DE LOS VÉRTICES
-originalSurfacePositions =
-    surfaceGeometry.attributes.position.array.slice();
 
-    const surfaceMaterial = new THREE.MeshStandardMaterial({
-        color: 0x9b673e,
-        roughness: 0.9
-    });
+const baseLayer = addLayer(
+  'Base granular',
+  12.5,
+  0.5,
+  1.85,
+  gravelTexture
+);
 
-    roadSurface = new THREE.Mesh(
-        surfaceGeometry,
-        surfaceMaterial
-    );
+// ==========================================================
+// CARPETA ASFÁLTICA POR TRAMOS
+// ==========================================================
 
-    roadSurface.position.y = 2.25;
+for (
+  let z = ROAD.startZ;
+  z < ROAD.endZ;
+  z += 2.5
+) {
 
-    roadSurface.receiveShadow = true;
+  const length = Math.min(
+    2.5,
+    ROAD.endZ - z
+  );
 
-    scene.add(roadSurface);
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      11.8,
+      0.33,
+      length + 0.03
+    ),
+    asphaltFreshMaterial
+  );
 
+  mesh.position.set(
+    0,
+    2.265,
+    z + length / 2
+  );
 
-    // Bordes
-    createRoadEdge(-6.7);
-    createRoadEdge(6.7);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
 
-    // Línea central
-    for (let z = -36; z <= 36; z += 7) {
+  mesh.visible = false;
 
-        const lineGeometry = new THREE.BoxGeometry(
-            0.15,
-            0.02,
-            3
-        );
+  scene.add(mesh);
 
-        const lineMaterial = new THREE.MeshStandardMaterial({
-            color: 0xffffff
-        });
-
-        const line = new THREE.Mesh(
-            lineGeometry,
-            lineMaterial
-        );
-
-        line.position.set(
-            0,
-            2.6,
-            z
-        );
-
-        scene.add(line);
-    }
+  asphaltChunks.push({
+    mesh,
+    centerZ: z + length / 2,
+    compacted: false
+  });
 }
 
-function createRoadEdge(x) {
+// ==========================================================
+// SEÑALIZACIÓN
+// ==========================================================
 
-    const geometry = new THREE.BoxGeometry(
-        0.35,
-        0.4,
-        80
-    );
+roadMarkings = new THREE.Group();
 
-    const material = new THREE.MeshStandardMaterial({
-        color: 0xd6b07b
-    });
+scene.add(roadMarkings);
 
-    const edge = new THREE.Mesh(
-        geometry,
-        material
-    );
+for (const side of [-1, 1]) {
 
-    edge.position.set(
-        x,
-        2.45,
-        0
-    );
+  const edge = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      0.12,
+      0.02,
+      ROAD.length - 2
+    ),
+    material(0xf4f0df)
+  );
 
-    scene.add(edge);
+  edge.position.set(
+    side * 5.55,
+    ASPHALT_TOP + 0.02,
+    0
+  );
+
+  roadMarkings.add(edge);
 }
 
-createRoad();
+for (
+  let z = ROAD.startZ + 3;
+  z < ROAD.endZ;
+  z += 8
+) {
 
-// ------------------------------------------------------------
-// ÁRBOLES
-// ------------------------------------------------------------
+  const dash = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      0.14,
+      0.025,
+      3.5
+    ),
+    material(0xffffff)
+  );
 
-function createTree(x, z, scale = 1) {
+  dash.position.set(
+    0,
+    ASPHALT_TOP + 0.025,
+    z
+  );
 
-    const group = new THREE.Group();
-
-    const trunkGeometry = new THREE.CylinderGeometry(
-        0.25,
-        0.35,
-        2,
-        8
-    );
-
-    const trunkMaterial = new THREE.MeshStandardMaterial({
-        color: 0x654321
-    });
-
-    const trunk = new THREE.Mesh(
-        trunkGeometry,
-        trunkMaterial
-    );
-
-    trunk.position.y = 1;
-
-    trunk.castShadow = true;
-
-    group.add(trunk);
-
-
-    const crownGeometry = new THREE.SphereGeometry(
-        1.5,
-        12,
-        12
-    );
-
-    const crownMaterial = new THREE.MeshStandardMaterial({
-        color: 0x247a35
-    });
-
-    const crown = new THREE.Mesh(
-        crownGeometry,
-        crownMaterial
-    );
-
-    crown.position.y = 2.8;
-
-    crown.castShadow = true;
-
-    group.add(crown);
-
-    group.position.set(
-        x,
-        0,
-        z
-    );
-
-    group.scale.setScalar(scale);
-
-    scene.add(group);
+  roadMarkings.add(dash);
 }
 
-for (let z = -32; z <= 32; z += 8) {
+roadMarkings.visible = false;
 
-    createTree(-12, z, 0.9);
-    createTree(12, z + 2, 1.1);
+// ==========================================================
+// HERRAMIENTA PARA CREAR PIEZAS 3D
+// ==========================================================
+
+function addMesh(
+  parent,
+  geometry,
+  mat,
+  position,
+  castShadow = true
+) {
+
+  const mesh = new THREE.Mesh(
+    geometry,
+    mat
+  );
+
+  mesh.position.set(...position);
+
+  mesh.castShadow = castShadow;
+  mesh.receiveShadow = true;
+
+  parent.add(mesh);
+
+  return mesh;
 }
 
-// ------------------------------------------------------------
-// NUBES
-// ------------------------------------------------------------
-
-function createCloud(x, y, z) {
-
-    const group = new THREE.Group();
-
-    for (let i = 0; i < 6; i++) {
-
-        const geometry = new THREE.SphereGeometry(
-            1.5 + Math.random(),
-            12,
-            12
-        );
-
-        const material = new THREE.MeshStandardMaterial({
-            color: 0xffffff
-        });
-
-        const cloudPart = new THREE.Mesh(
-            geometry,
-            material
-        );
-
-        cloudPart.position.set(
-            i * 1.5,
-            Math.random(),
-            Math.random() * 1.2
-        );
-
-        group.add(cloudPart);
-    }
-
-    group.position.set(x, y, z);
-
-    scene.add(group);
-}
-
-createCloud(-20, 18, -20);
-createCloud(20, 20, -30);
-
-// ------------------------------------------------------------
-// RODILLO COMPACTADOR
-// ------------------------------------------------------------
+// ==========================================================
+// RODILLO COMPACTADOR PRINCIPAL
+// ==========================================================
 
 function createRoller() {
 
-    roller = new THREE.Group();
+  const root = new THREE.Group();
 
-    // Chasis
-    const chassisGeometry = new THREE.BoxGeometry(
-        3.5,
-        1.5,
-        4.2
-    );
+  root.name = 'Rodillo vibratorio de compactación';
+  const yellow = material(0xf2b900, 0.55);
+  const black = material(0x20272c, 0.9);
+  const glass = new THREE.MeshStandardMaterial({
+    color: 0x83c8df,
+    roughness: 0.2,
+    transparent: true,
+    opacity: 0.65
+  });
 
-    const chassisMaterial = new THREE.MeshStandardMaterial({
-        color: 0xe6a800,
-        roughness: 0.7
-    });
+  addMesh(
+    root,
+    new THREE.BoxGeometry(3.1, 0.8, 4.2),
+    yellow,
+    [0, 1.75, 0]
+  );
 
-    const chassis = new THREE.Mesh(
-        chassisGeometry,
-        chassisMaterial
-    );
+  addMesh(
+    root,
+    new THREE.BoxGeometry(2.2, 1.4, 1.8),
+    yellow,
+    [0, 2.7, 0.8]
+  );
 
-    chassis.position.y = 1.8;
+  addMesh(
+    root,
+    new THREE.BoxGeometry(1.9, 0.9, 0.04),
+    glass,
+    [0, 2.8, 1.72],
+    false
+  );
 
-    chassis.castShadow = true;
+  addMesh(
+    root,
+    new THREE.BoxGeometry(2.8, 0.15, 1),
+    black,
+    [0, 1.2, 0]
+  );
 
-    roller.add(chassis);
+  // Tambor frontal
+  const drum = addMesh(
+    root,
+    new THREE.CylinderGeometry(
+      0.9,
+      0.9,
+      2.9,
+      40
+    ),
+    material(0x555d62, 0.3, 0.7),
+    [0, 0.9, -1.8]
+  );
 
+  drum.rotation.z = Math.PI / 2;
 
-    // Cabina
-    const cabinGeometry = new THREE.BoxGeometry(
-        2.5,
-        1.8,
-        2.1
-    );
+  rotatingParts.push({
+    object: drum,
+    radius: 0.9
+  });
 
-    const cabinMaterial = new THREE.MeshStandardMaterial({
-        color: 0x263238,
-        roughness: 0.35,
-        metalness: 0.1
-    });
+  // Ruedas posteriores
+  for (const x of [-0.95, 0.95]) {
 
-    const cabin = new THREE.Mesh(
-        cabinGeometry,
-        cabinMaterial
-    );
-
-    cabin.position.set(
-        0,
-        3.1,
-        0.5
-    );
-
-    cabin.castShadow = true;
-
-    roller.add(cabin);
-
-
-    // Vidrios
-    const glassGeometry = new THREE.BoxGeometry(
-        2.1,
-        1.2,
-        0.08
-    );
-
-    const glassMaterial = new THREE.MeshStandardMaterial({
-        color: 0x9dd8e8,
-        transparent: true,
-        opacity: 0.65
-    });
-
-    const frontGlass = new THREE.Mesh(
-        glassGeometry,
-        glassMaterial
-    );
-
-    frontGlass.position.set(
-        0,
-        3.1,
-        -0.58
-    );
-
-    roller.add(frontGlass);
-
-
-    // Tambor compactador
-    const drumGeometry = new THREE.CylinderGeometry(
-        1.15,
-        1.15,
-        3.2,
+    const wheel = addMesh(
+      root,
+      new THREE.CylinderGeometry(
+        0.75,
+        0.75,
+        0.65,
         32
+      ),
+      black,
+      [x, 0.75, 1.5]
     );
 
-    const drumMaterial = new THREE.MeshStandardMaterial({
-        color: 0x454545,
-        metalness: 0.75,
-        roughness: 0.35
-    });
+    wheel.rotation.z = Math.PI / 2;
 
-    const drum = new THREE.Mesh(
-        drumGeometry,
-        drumMaterial
+    rotatingParts.push({
+      object: wheel,
+      radius: 0.75
+    });
+  }
+
+  root.position.set(
+    0,
+    BASE_TOP,
+    ROAD.startZ
+  );
+
+  scene.add(root);
+
+  return root;
+}
+
+roller = createRoller();
+
+// ==========================================================
+// PAVIMENTADORA
+// ==========================================================
+
+function createPaver() {
+
+  const root = new THREE.Group();
+
+  const yellow = material(0xeeb41b);
+  const black = material(0x252b30);
+
+  addMesh(
+    root,
+    new THREE.BoxGeometry(3.3, 1, 3.5),
+    yellow,
+    [0, 1.4, 0]
+  );
+
+  addMesh(
+    root,
+    new THREE.BoxGeometry(3.6, 0.9, 1.1),
+    yellow,
+    [0, 1.5, 1.7]
+  );
+
+  addMesh(
+    root,
+    new THREE.BoxGeometry(11.8, 0.2, 0.5),
+    material(0x626c73, 0.4, 0.6),
+    [0, 0.15, -2.4]
+  );
+
+  for (const x of [-1.7, 1.7]) {
+
+    addMesh(
+      root,
+      new THREE.BoxGeometry(0.5, 0.7, 3),
+      black,
+      [x, 0.5, 0]
+    );
+  }
+
+  root.position.set(
+    0,
+    BASE_TOP,
+    ROAD.startZ + 3
+  );
+
+  root.visible = false;
+
+  scene.add(root);
+
+  return root;
+}
+
+// ==========================================================
+// RODILLO TÁNDEM ASFÁLTICO
+// ==========================================================
+
+function createAsphaltRoller() {
+
+  const root = new THREE.Group();
+
+  const yellow = material(0xf2b900);
+  const black = material(0x242a2e);
+
+  for (const z of [-1.35, 1.35]) {
+
+    const drum = addMesh(
+      root,
+      new THREE.CylinderGeometry(
+        0.78,
+        0.78,
+        2.8,
+        40
+      ),
+      material(0x555e65, 0.3, 0.7),
+      [0, 0.78, z]
     );
 
     drum.rotation.z = Math.PI / 2;
 
-    drum.position.set(
-        0,
-        0.95,
-        -2
-    );
-
-    drum.castShadow = true;
-
-    roller.add(drum);
-
-    rollerWheels.push(drum);
-
-
-    // Rueda trasera
-    const rearWheelGeometry = new THREE.CylinderGeometry(
-        0.85,
-        0.85,
-        2.4,
-        24
-    );
-
-    const rearWheel = new THREE.Mesh(
-        rearWheelGeometry,
-        drumMaterial
-    );
-
-    rearWheel.rotation.z = Math.PI / 2;
-
-    rearWheel.position.set(
-        0,
-        0.85,
-        1.5
-    );
-
-    rearWheel.castShadow = true;
-
-    roller.add(rearWheel);
-
-    rollerWheels.push(rearWheel);
-
-
-    // Escape
-    const exhaustGeometry = new THREE.CylinderGeometry(
-        0.15,
-        0.15,
-        1.3,
-        10
-    );
-
-    const exhaustMaterial = new THREE.MeshStandardMaterial({
-        color: 0x252525
+    asphaltRollerParts.push({
+      object: drum,
+      radius: 0.78
     });
-
-    const exhaust = new THREE.Mesh(
-        exhaustGeometry,
-        exhaustMaterial
-    );
-
-    exhaust.position.set(
-        1.1,
-        3,
-        1.1
-    );
-
-    roller.add(exhaust);
-
-
-    roller.position.set(
-        0,
-        2.7,
-        -30
-    );
-
-    scene.add(roller);
-}
-
-createRoller();
-
-// ------------------------------------------------------------
-// PANEL DE CONTROL
-// ------------------------------------------------------------
-
-const panel = document.createElement('div');
-
-panel.id = 'control-panel';
-
-panel.innerHTML = `
-
-<div class="brand">
-    <strong>GeoCompact</strong>
-    <span>Road Compaction Simulator 3D</span>
-</div>
-
-<div class="field">
-    <label>Grado de compactación obtenido (%)</label>
-    <input id="gradeInput" type="text" inputmode="decimal" value="93.18"></div>
-
-<div class="field">
-    <label>Compactación mínima exigida (%)</label>
-    <input id="minimumInput" type="text" inputmode="decimal" value="95"></div>
-
-<div class="field">
-    <label>Número de pasadas</label>
-    <input id="passesInput" type="number" value="8" min="1" max="20">
-</div>
-
-<div class="field">
-    <label>Espesor de capa (cm)</label>
-    <input id="thicknessInput" type="text" inputmode="decimal" value="14"></div>
-
-<button id="startButton">
-    ▶ INICIAR SIMULACIÓN
-</button>
-
-<button id="resetButton" class="secondary">
-    ↻ REINICIAR
-</button>
-
-<div id="progress-box">
-Pasadas completadas: 0 / 8
-</div>
-</div>
-
-<div id="status-box">
-    Esperando análisis...
-</div>
-
-`;
-
-document.body.appendChild(panel);
-
-// SACAR EL CONTADOR FUERA DEL PANEL
-const progressBox = document.getElementById('progress-box');
-
-if (progressBox) {
-    document.body.appendChild(progressBox);
-
-    progressBox.style.position = 'fixed';
-    progressBox.style.top = '20px';
-    progressBox.style.right = '20px';
-    progressBox.style.zIndex = '2000';
-    progressBox.style.width = '220px';
-    progressBox.style.boxShadow = '0 4px 15px rgba(0,0,0,0.25)';
-}
-
-/* ==========================================
-   CONEXIÓN CON GEOCOMPACT
-========================================== */
-
-const parametrosGeo = new URLSearchParams(window.location.search);
-
-function leerParametroGeo(nombre, valorPredeterminado) {
-    const valor = parametrosGeo.get(nombre);
-
-    if (valor === null || valor.trim() === '') {
-        return valorPredeterminado;
-    }
-
-    const numero = Number(valor);
-
-    return Number.isFinite(numero)
-        ? numero
-        : valorPredeterminado;
-}
-
-// DATOS DEL CASO 5
-const datosCaso5URL = {
-    proyecto: parametrosGeo.get('proyecto') || 'Mejoramiento vial - Puente Piedra',
-
-    rhoHumeda: leerParametroGeo('rhoHumeda', 2.086),
-    humedad: leerParametroGeo('humedad', 9.2),
-    rhoSeca: leerParametroGeo('rhoSeca', 1.9103),
-
-    rhoStd: leerParametroGeo('rhoStd', 1.82),
-    wStd: leerParametroGeo('wStd', 12.5),
-
-    rhoMod: leerParametroGeo('rhoMod', 2.05),
-    wMod: leerParametroGeo('wMod', 8.5),
-
-    gcEstandar: leerParametroGeo('gcEstandar', 104.96),
-    gcModificado: leerParametroGeo('gcModificado', 93.18),
-
-    exigencia: leerParametroGeo('exigencia', 95),
-
-    pasadas: leerParametroGeo(
-        'pasadas',
-        Number(document.getElementById('passesInput')?.value || 8)
-    ),
-
-    espesorCm: leerParametroGeo(
-        'espesorCm',
-        Number(document.getElementById('thicknessInput')?.value || 14)
-    ),
-
-    referencia: parametrosGeo.get('referencia') || 'Proctor modificado'
-};
-
-// IDENTIFICAR REFERENCIA SELECCIONADA
-const referenciaEstandar =
-    datosCaso5URL.referencia.toLowerCase().includes('estándar') ||
-    datosCaso5URL.referencia.toLowerCase().includes('estandar');
-
-const gradoSeleccionado = referenciaEstandar
-    ? datosCaso5URL.gcEstandar
-    : datosCaso5URL.gcModificado;
-
-datosCaso5URL.cumpleSeleccion =
-    gradoSeleccionado >= datosCaso5URL.exigencia;
-
-// CARGAR DATOS EN LOS CAMPOS
-const gradeInputURL = document.getElementById('gradeInput');
-const minimumInputURL = document.getElementById('minimumInput');
-const passesInputURL = document.getElementById('passesInput');
-const thicknessInputURL = document.getElementById('thicknessInput');
-
-if (gradeInputURL) {
-    gradeInputURL.value = gradoSeleccionado.toFixed(2);
-}
-
-if (minimumInputURL) {
-    minimumInputURL.value = datosCaso5URL.exigencia;
-}
-
-if (passesInputURL) {
-    passesInputURL.value = datosCaso5URL.pasadas;
-}
-
-if (thicknessInputURL) {
-    thicknessInputURL.value = datosCaso5URL.espesorCm;
-}
-
-console.log('Datos recibidos de COMPACTA LAB 360:', datosCaso5URL);
-
-// ------------------------------------------------------------
-// RESULTADO
-// ------------------------------------------------------------
-
-function updateResult() {
-
-    
-// DATOS GEOTÉCNICOS DE COMPACTA LAB 360
-
-const densidadSecaCampo = Number(datosCaso5URL.rhoSeca);
-
-const densidadSecaMaxima = Number(
-    referenciaEstandar
-        ? datosCaso5URL.rhoStd
-        : datosCaso5URL.rhoMod
-);
-
-const humedadCampo = Number(datosCaso5URL.humedad);
-
-const humedadOptima = Number(
-    referenciaEstandar
-        ? datosCaso5URL.wStd
-        : datosCaso5URL.wMod
-);
-
-// CALCULAR GRADO DE COMPACTACIÓN
-
-const gradoCalculado =
-    (densidadSecaCampo / densidadSecaMaxima) * 100;
-
-currentGrade = Number.isFinite(gradoCalculado)
-    ? gradoCalculado
-    : parseFloat(document.getElementById('gradeInput').value);
-
-// ACTUALIZAR CAMPO DE GRADO
-
-document.getElementById('gradeInput').value =
-    currentGrade.toFixed(2);
-
-// LEER EXIGENCIA Y CONDICIONES DE OBRA
-
-minimumGrade = parseFloat(
-    document.getElementById('minimumInput').value
-);
-
-passes = parseInt(
-    document.getElementById('passesInput').value
-);
-
-layerThickness = parseFloat(
-    document.getElementById('thicknessInput').value
-);
-
-// DIFERENCIA DE HUMEDAD RESPECTO AL ÓPTIMO
-
-const desviacionHumedad = Math.abs(
-    humedadCampo - humedadOptima
-);
-
-// DÉFICIT DE COMPACTACIÓN
-
-const deficit = Math.max(
+  }
+
+  addMesh(
+    root,
+    new THREE.BoxGeometry(2.5, 0.75, 2),
+    yellow,
+    [0, 1.9, 0]
+  );
+
+  addMesh(
+    root,
+    new THREE.BoxGeometry(1.5, 0.7, 1.2),
+    black,
+    [0, 2.65, 0]
+  );
+
+  root.position.set(
     0,
-    minimumGrade - currentGrade
-);
+    ASPHALT_TOP,
+    ROAD.startZ - 8
+  );
 
+  root.visible = false;
 
-    const statusBox =
-        document.getElementById('status-box');
+  scene.add(root);
 
-    if (currentGrade >= minimumGrade) {
-
-        statusBox.className = 'good';
-
-        statusBox.innerHTML = `
-            <strong>✓ COMPACTACIÓN ADECUADA</strong>
-            <p>
-            El grado de compactación (${currentGrade.toFixed(2)} %)
-            alcanza o supera el mínimo exigido
-            (${minimumGrade.toFixed(2)} %).
-            </p>
-
-            <p>
-            La capa presenta una condición adecuada para la
-            simulación didáctica.
-            </p>
-
-            <strong>Propuesta ingenieril</strong>
-
-            <p>
-            Mantener el procedimiento de compactación,
-            verificando humedad, espesor de capa,
-            equipo y número de pasadas.
-            </p>
-        `;
-
-    } else {
-
-        statusBox.className = 'bad';
-
-        statusBox.innerHTML = `
-            <strong>⚠ COMPACTACIÓN INSUFICIENTE</strong>
-
-            <p>
-            Resultado: ${currentGrade.toFixed(2)} %
-            </p>
-
-            <p>
-            Mínimo exigido: ${minimumGrade.toFixed(2)} %
-            </p>
-
-            <p>
-            Déficit: ${deficit.toFixed(2)} puntos porcentuales.
-            </p>
-
-            <p>
-<strong>Evaluación geotécnica:</strong>
-</p>
-
-<ul>
-    <li>Densidad seca de campo:
-    ${densidadSecaCampo.toFixed(3)} g/cm³</li>
-
-    <li>Densidad seca máxima Proctor:
-    ${densidadSecaMaxima.toFixed(3)} g/cm³</li>
-
-    <li>Humedad de campo:
-    ${humedadCampo.toFixed(2)} %</li>
-
-    <li>Humedad óptima:
-    ${humedadOptima.toFixed(2)} %</li>
-
-    <li>Diferencia de humedad:
-    ${desviacionHumedad.toFixed(2)} puntos porcentuales</li>
-</ul>
-
-            <strong>Consecuencias posibles</strong>
-
-            <ul>
-                <li>Mayor deformación de la capa.</li>
-                <li>Asentamientos posteriores.</li>
-                <li>Menor capacidad de soporte.</li>
-                <li>Formación de ahuellamientos.</li>
-                <li>Deterioro prematuro de la superficie.</li>
-            </ul>
-
-            <strong>Propuesta ingenieril</strong>
-
-            <p>
-            Verificar y ajustar la humedad, revisar el espesor
-            de la capa, aumentar o ajustar el número de pasadas
-            y seleccionar un equipo de compactación adecuado.
-            </p>
-        `;
-    }
+  return root;
 }
 
-updateResult();
+asphaltPaver = createPaver();
+asphaltRoller = createAsphaltRoller();
 
-// ------------------------------------------------------------
-// SIMULACIÓN
-// ------------------------------------------------------------
+// ==========================================================
+// FIN PARTE 1
+// ==========================================================
+// ==========================================================
+// EQUIPOS DE SOLUCIÓN INGENIERIL
+// ==========================================================
 
+function createRepairMachine(type) {
 
-function limpiarEscenarioAnterior() {
+    const root = new THREE.Group();
 
-    // ELIMINAR GRIETAS DE LA PRUEBA ANTERIOR
-    const previousCracks =
-        roadSurface.getObjectByName('failureCracks');
+    const yellow = material(0xe9ad18);
+    const dark = material(0x252b30);
+    const steel = material(0x68747c, 0.4, 0.6);
 
-    if (previousCracks) {
-        roadSurface.remove(previousCracks);
-    }
-// RESTAURAR TODOS LOS VÉRTICES DE LA CARRETERA
-if (originalSurfacePositions) {
-
-    const geometry = roadSurface.geometry;
-
-    const positions = geometry.attributes.position;
-
-    positions.array.set(originalSurfacePositions);
-
-    positions.needsUpdate = true;
-
-    // RECALCULAR NORMALES Y LÍMITES
-    geometry.computeVertexNormals();
-    geometry.computeBoundingBox();
-    geometry.computeBoundingSphere();
-}
-    // RESTAURAR LA CARRETERA
-    deformationAmount = 0;
-    roadSurface.position.y = 2.25;
-    roadSurface.scale.y = 1;
-
-    // DEVOLVER EL RODILLO AL INICIO
-    roller.position.set(
-        0,
-        2.7,
-        ROLLER_START_Z
+    addMesh(
+      root,
+      new THREE.BoxGeometry(2.8, 0.8, 3.7),
+      yellow,
+      [0, 1.2, 0]
     );
 
-    roller.rotation.y = 0;
+    addMesh(
+      root,
+      new THREE.BoxGeometry(1.7, 1.1, 1.5),
+      yellow,
+      [0, 2, 0.65]
+    );
 
-    // RESTAURAR RUEDAS
-    rollerWheels.forEach(wheel => {
-        wheel.rotation.x = 0;
+    addMesh(
+      root,
+      new THREE.BoxGeometry(1.5, 0.8, 0.035),
+      new THREE.MeshStandardMaterial({
+        color: 0x83c8df,
+        transparent: true,
+        opacity: 0.65,
+        roughness: 0.2
+      }),
+      [0, 2.05, 1.42],
+      false
+    );
+
+    for (const x of [-1.35, 1.35]) {
+      for (const z of [-1.1, 1.1]) {
+
+        const wheel = addMesh(
+          root,
+          new THREE.CylinderGeometry(
+            0.43,
+            0.43,
+            0.35,
+            24
+          ),
+          dark,
+          [x, 0.48, z]
+        );
+
+        wheel.rotation.z = Math.PI / 2;
+      }
+    }
+
+    if (type === 'scarifier') {
+
+      // Barra trasera de escarificación.
+      addMesh(
+        root,
+        new THREE.BoxGeometry(2.8, 0.14, 0.2),
+        steel,
+        [0, 0.6, -2]
+      );
+
+      for (let x = -1.15; x <= 1.15; x += 0.38) {
+
+        const tooth = addMesh(
+          root,
+          new THREE.BoxGeometry(0.09, 0.7, 0.12),
+          steel,
+          [x, 0.2, -2.05]
+        );
+
+        tooth.rotation.x = -0.16;
+      }
+    }
+
+    if (type === 'water') {
+
+      // Cisterna.
+      const tank = addMesh(
+        root,
+        new THREE.CylinderGeometry(
+          0.78,
+          0.78,
+          2.5,
+          32
+        ),
+        material(0xd8e0e7, 0.4, 0.2),
+        [0, 2, -0.2]
+      );
+
+      tank.rotation.x = Math.PI / 2;
+
+      // Barra de aspersión.
+      addMesh(
+        root,
+        new THREE.BoxGeometry(2.8, 0.12, 0.2),
+        steel,
+        [0, 0.45, -2]
+      );
+    }
+
+    if (type === 'grader') {
+
+      // Hoja niveladora.
+      const blade = addMesh(
+        root,
+        new THREE.BoxGeometry(3.6, 0.2, 0.35),
+        steel,
+        [0, 0.7, -1.8]
+      );
+
+      blade.rotation.y = 0.12;
+    }
+
+    root.position.set(
+      0,
+      BASE_TOP,
+      ROAD.startZ - 7
+    );
+
+    root.visible = false;
+
+    scene.add(root);
+
+    return root;
+  }
+
+  scarifier = createRepairMachine('scarifier');
+  waterTruck = createRepairMachine('water');
+  grader = createRepairMachine('grader');
+
+  // ==========================================================
+  // TÉCNICO PARA CONTROL DE DENSIDAD
+  // ==========================================================
+
+  function createDensityTechnician() {
+
+    const root = new THREE.Group();
+
+    const vest = material(0xffa51e);
+    const pants = material(0x263b52);
+    const skin = material(0xc58b65);
+
+    addMesh(
+      root,
+      new THREE.CylinderGeometry(
+        0.2,
+        0.25,
+        0.85,
+        12
+      ),
+      vest,
+      [0, 1.15, 0]
+    );
+
+    addMesh(
+      root,
+      new THREE.SphereGeometry(0.22, 16, 12),
+      skin,
+      [0, 1.72, 0]
+    );
+
+    for (const x of [-0.13, 0.13]) {
+
+      addMesh(
+        root,
+        new THREE.CylinderGeometry(
+          0.09,
+          0.11,
+          0.65,
+          10
+        ),
+        pants,
+        [x, 0.42, 0]
+      );
+    }
+
+    // Equipo de medición representativo.
+    addMesh(
+      root,
+      new THREE.BoxGeometry(0.42, 0.48, 0.3),
+      material(0x286d9e),
+      [-0.65, 0.38, 0]
+    );
+
+    root.position.set(2.2, BASE_TOP, 0);
+    root.visible = false;
+
+    scene.add(root);
+
+    return root;
+  }
+
+  densityTechnician = createDensityTechnician();
+
+  // ==========================================================
+  // VEHÍCULOS PARA LA CARRETERA TERMINADA
+  // ==========================================================
+
+  function createTrafficCar(color) {
+
+    const root = new THREE.Group();
+
+    const body = material(color, 0.4);
+
+    const glass = new THREE.MeshStandardMaterial({
+      color: 0x8ac5df,
+      roughness: 0.2,
+      metalness: 0.1
     });
 
-    // REINICIAR CONTADORES
-    animationProgress = 0;
-    completedPasses = 0;
-    travelDirection = 1;
-
-    // OCULTAR RESULTADO ANTERIOR
-    const statusBox =
-        document.getElementById('status-box');
-
-    if (statusBox) {
-        statusBox.style.display = 'none';
-        statusBox.innerHTML = 'Esperando análisis...';
-        statusBox.className = '';
-    }
-
-    // REINICIAR CONTADOR VISUAL
-    const progressBox =
-        document.getElementById('progress-box');
-
-    if (progressBox) {
-        progressBox.textContent =
-            `Pasadas completadas: 0 / ${passes}`;
-    }
-}
-
-function startSimulation() {
-
-    // EVITAR DOBLE EJECUCIÓN
-    if (isRunning) return;
-
-    // LIMPIAR LA PRUEBA ANTERIOR
-    limpiarEscenarioAnterior();
-
-    // ACTUALIZAR LOS DATOS INGRESADOS
-    updateResult();
-  
-   // OCULTAR PANEL DE DATOS
-const controlPanel = document.getElementById('control-panel');
-
-if (controlPanel) {
-    controlPanel.style.display = 'none';
-}
-
-    // INICIAR SIMULACIÓN
-    isRunning = true;
-    simulationFinished = false;
-
-    // REINICIAR CONTADORES
-    animationProgress = 0;
-    completedPasses = 0;
-    travelDirection = 1;
-
-    // UBICAR EL RODILLO AL INICIO
-    roller.position.set(
-        0,
-        2.7,
-        ROLLER_START_Z
+    addMesh(
+      root,
+      new THREE.BoxGeometry(1.85, 0.62, 3.5),
+      body,
+      [0, 0.65, 0]
     );
 
-    roller.rotation.y = 0;
+    addMesh(
+      root,
+      new THREE.BoxGeometry(1.4, 0.65, 1.75),
+      glass,
+      [0, 1.25, -0.15]
+    );
 
-    // RESTABLECER LA CAPA
-    roadSurface.position.y = 2.25;
-    roadSurface.scale.y = 1;
+    addMesh(
+      root,
+      new THREE.BoxGeometry(1.8, 0.13, 1.1),
+      body,
+      [0, 1.62, -0.15]
+    );
 
-    // CALCULAR LA DEFORMACIÓN VISUAL
-    deformationAmount =
-        currentGrade < minimumGrade
-        ? Math.min(
-            0.7,
-            (minimumGrade - currentGrade) * 0.06
-          )
-        : 0;
+    for (const x of [-0.95, 0.95]) {
+      for (const z of [-1.05, 1.05]) {
 
-    // ACTUALIZAR CONTADOR
-    const progressBox =
-        document.getElementById('progress-box');
+        const wheel = addMesh(
+          root,
+          new THREE.CylinderGeometry(
+            0.29,
+            0.29,
+            0.2,
+            20
+          ),
+          material(0x15191d),
+          [x, 0.3, z]
+        );
 
-    if (progressBox) {
-        progressBox.textContent =
-            `Pasadas completadas: 0 / ${passes}`;
+        wheel.rotation.z = Math.PI / 2;
+      }
     }
 
-    // BLOQUEAR BOTÓN DURANTE LA SIMULACIÓN
-    document.getElementById(
-        'startButton'
-    ).disabled = true;
-}
+    for (const x of [-0.58, 0.58]) {
 
-function resetSimulation() {
+      addMesh(
+        root,
+        new THREE.BoxGeometry(0.25, 0.16, 0.08),
+        material(0xffe6a0),
+        [x, 0.72, 1.78]
+      );
+
+      addMesh(
+        root,
+        new THREE.BoxGeometry(0.22, 0.15, 0.08),
+        material(0xff3636),
+        [x, 0.72, -1.78]
+      );
+    }
+
+    root.visible = false;
+
+    scene.add(root);
+
+    return root;
+  }
+
+  trafficCars = [
+    {
+      group: createTrafficCar(0xd32f2f),
+      lane: -1.7,
+      direction: 1,
+      speed: 8
+    },
+    {
+      group: createTrafficCar(0xeeeeee),
+      lane: 1.7,
+      direction: -1,
+      speed: 7
+    },
+    {
+      group: createTrafficCar(0x1976d2),
+      lane: -1.7,
+      direction: 1,
+      speed: 9
+    },
+    {
+      group: createTrafficCar(0xf0b51b),
+      lane: 1.7,
+      direction: -1,
+      speed: 8
+    }
+  ];
+
+  // ==========================================================
+  // INTERFAZ DE GEOCOMPACT
+  // ==========================================================
+
+  const panel = document.createElement('aside');
+
+  panel.id = 'control-panel';
+
+  panel.innerHTML = `
+    <div class="brand">
+      <div class="brand-mark">GC</div>
+      <div>
+        <strong>GEOCOMPACT</strong>
+        <span>ROAD COMPACTION SIMULATOR 3D</span>
+      </div>
+    </div>
+
+    <div class="project-name" id="project-name">
+      Proyecto: Mejoramiento vial - Caso 5
+    </div>
+
+    <div class="field">
+      <label for="gradeInput">
+        Grado de compactación obtenido (%)
+      </label>
+      <input
+        id="gradeInput"
+        type="number"
+        readonly
+        value="93.18"
+      >
+    </div>
+
+    <div class="field">
+      <label for="minimumInput">
+        Compactación mínima exigida (%)
+      </label>
+      <input
+        id="minimumInput"
+        type="number"
+        min="0"
+        max="110"
+        step="0.01"
+        value="95"
+      >
+    </div>
+
+    <div class="field">
+      <label for="passesInput">
+        Número de pasadas
+      </label>
+      <input
+        id="passesInput"
+        type="number"
+        min="1"
+        max="20"
+        value="6"
+      >
+    </div>
+
+    <div class="field">
+      <label for="thicknessInput">
+        Espesor de capa (cm)
+      </label>
+      <input
+        id="thicknessInput"
+        type="number"
+        min="5"
+        max="60"
+        value="20"
+      >
+    </div>
+
+    <button id="startButton" type="button">
+      ▶ INICIAR COMPACTACIÓN
+    </button>
+
+    <button id="resetButton" class="secondary" type="button">
+      ↻ REINICIAR SIMULACIÓN
+    </button>
+
+    <div id="status-box" aria-live="polite"></div>
+  `;
+
+  document.body.appendChild(panel);
+
+  // ==========================================================
+  // PANEL DE PASADAS
+  // ==========================================================
+
+  const progress = document.createElement('div');
+
+  progress.id = 'progress-box';
+
+  progress.innerHTML = `
+    <div class="progress-heading">
+      <span id="progress-title">PASADAS</span>
+      <span id="pass-counter">0 / 6</span>
+    </div>
+
+    <div class="progress-track">
+      <span id="progress-fill"></span>
+    </div>
+
+    <small id="progress-caption">
+      Esperando inicio
+    </small>
+  `;
+
+  document.body.appendChild(progress);
+
+  // ==========================================================
+  // INDICACIONES Y SINCRONIZACIÓN
+  // ==========================================================
+
+  const hint = document.createElement('div');
+
+  hint.id = 'scene-hint';
+
+  hint.textContent =
+    'Arrastra para girar · Rueda para acercar';
+
+  document.body.appendChild(hint);
+
+  const syncIndicator = document.createElement('div');
+
+  syncIndicator.id = 'sync-indicator';
+
+  syncIndicator.textContent =
+    'Esperando parámetros de COMPACTA LAB 360';
+
+  document.body.appendChild(syncIndicator);
+
+  // ==========================================================
+  // REFERENCIAS DE INTERFAZ
+  // ==========================================================
+
+  const $ = id => document.getElementById(id);
+
+  const statusBox = $('status-box');
+  const startButton = $('startButton');
+  const resetButton = $('resetButton');
+
+  // ==========================================================
+  // DATOS PROCEDENTES DE COLAB
+  // ==========================================================
+
+  const defaults = { ...geoData };
+
+  function numeric(value, fallback) {
+
+    if (
+      value === null ||
+      value === undefined ||
+      value === ''
+    ) {
+      return fallback;
+    }
+
+    const normalized = typeof value === 'string'
+      ? value.trim().replace(',', '.')
+      : value;
+
+    const parsed = Number(normalized);
+
+    return Number.isFinite(parsed)
+      ? parsed
+      : fallback;
+  }
+
+  function getIncomingValue(source, aliases) {
+
+    for (const alias of aliases) {
+
+      const value = source?.[alias];
+
+      if (
+        value !== undefined &&
+        value !== null &&
+        value !== ''
+      ) {
+        return value;
+      }
+    }
+
+    return undefined;
+  }
+
+  function parseIncoming(source) {
+
+    if (typeof source === 'string') {
+
+      try {
+        source = JSON.parse(source);
+      } catch {
+        return {};
+      }
+    }
+
+    if (!source || typeof source !== 'object') {
+      return {};
+    }
+
+    // Admite datos agrupados dentro de objetos de resultados.
+    const data = {
+      ...source,
+      ...(source.resultados || {}),
+      ...(source.metrics || {}),
+      ...(source.parametros || {})
+    };
+
+    const result = {};
+
+    const aliases = {
+      proyecto: [
+        'proyecto',
+        'project',
+        'nombreProyecto'
+      ],
+
+      rhoSeca: [
+        'rhoSeca',
+        'densidadSecaCampo',
+        'densidad_seca_campo',
+        'densidadSeca'
+      ],
+
+      rhoStd: [
+        'rhoStd',
+        'densidadMaximaEstandar',
+        'densidad_seca_maxima_estandar'
+      ],
+
+      wStd: [
+        'wStd',
+        'humedadOptimaEstandar',
+        'humedad_optima_estandar'
+      ],
+
+      rhoMod: [
+        'rhoMod',
+        'densidadMaximaModificada',
+        'densidad_seca_maxima_modificada'
+      ],
+
+      wMod: [
+        'wMod',
+        'humedadOptimaModificada',
+        'humedad_optima_modificada'
+      ],
+
+      humedad: [
+        'humedad',
+        'humedadCampo',
+        'humedad_campo'
+      ],
+
+      exigencia: [
+        'exigencia',
+        'compactacionMinima',
+        'gradoMinimo',
+        'minimumGrade'
+      ],
+
+      pasadas: [
+        'pasadas',
+        'numeroPasadas',
+        'numero_de_pasadas'
+      ],
+
+      espesorCm: [
+        'espesorCm',
+        'espesor',
+        'espesor_capa'
+      ],
+
+      referencia: [
+        'referencia',
+        'proctor',
+        'tipoProctor'
+      ],
+
+      gradeProvided: [
+        'gradoCompactacion',
+        'grado_compactacion',
+        'gcModificado',
+        'gcEstandar',
+        'gradoObtenido'
+      ]
+    };
+
+    for (const [key, names] of Object.entries(aliases)) {
+
+      const value = getIncomingValue(data, names);
+
+      if (value === undefined) continue;
+
+      if (key === 'proyecto' || key === 'referencia') {
+        result[key] = String(value);
+      } else {
+        result[key] = numeric(value, null);
+      }
+    }
+
+    // Si se reciben nuevas densidades, se calcula nuevamente
+    // y no se utiliza un grado antiguo.
+    if (
+      result.rhoSeca !== undefined ||
+      result.rhoMod !== undefined ||
+      result.rhoStd !== undefined
+    ) {
+      result.gradeProvided = null;
+    }
+
+    return result;
+  }
+
+  // ==========================================================
+  // REFERENCIA PROCTOR
+  // ==========================================================
+
+  function isStandardReference() {
+
+    const reference = String(
+      geoData.referencia || ''
+    ).toLowerCase();
+
+    return (
+      reference.includes('estándar') ||
+      reference.includes('estandar') ||
+      reference.includes('standard')
+    );
+  }
+
+  // ==========================================================
+  // CÁLCULO GEOTÉCNICO
+  // ==========================================================
+
+  function calculateMetrics() {
+
+    const standard = isStandardReference();
+
+    const maxDryDensity = Math.max(
+      0.001,
+      numeric(
+        standard ? geoData.rhoStd : geoData.rhoMod,
+        0
+      )
+    );
+
+    const dryDensity = Math.max(
+      0,
+      numeric(geoData.rhoSeca, 0)
+    );
+
+    const optimumMoisture = numeric(
+      standard ? geoData.wStd : geoData.wMod,
+      0
+    );
+
+    const hasDensityData =
+      Number.isFinite(geoData.rhoSeca) &&
+      Number.isFinite(
+        standard ? geoData.rhoStd : geoData.rhoMod
+      );
+
+    if (hasDensityData && maxDryDensity > 0) {
+
+      currentGrade =
+        (dryDensity / maxDryDensity) * 100;
+
+    } else if (
+      Number.isFinite(geoData.gradeProvided)
+    ) {
+
+      currentGrade = geoData.gradeProvided;
+    }
+
+    minimumGrade = Math.max(
+      0,
+      Math.min(
+        110,
+        numeric(
+          $('minimumInput').value,
+          geoData.exigencia
+        )
+      )
+    );
+
+    passes = Math.max(
+      1,
+      Math.min(
+        20,
+        Math.round(
+          numeric(
+            $('passesInput').value,
+            geoData.pasadas
+          )
+        )
+      )
+    );
+
+    metrics = {
+      dryDensity,
+      maxDryDensity,
+
+      fieldMoisture: numeric(
+        geoData.humedad,
+        0
+      ),
+
+      optimumMoisture,
+
+      moistureDifference: Math.abs(
+        numeric(geoData.humedad, 0) -
+        optimumMoisture
+      ),
+
+      deficit: Math.max(
+        0,
+        minimumGrade - currentGrade
+      ),
+
+      reference: standard
+        ? 'Proctor estándar'
+        : 'Proctor modificado'
+    };
+
+    $('gradeInput').value =
+      currentGrade.toFixed(2);
+
+    $('minimumInput').value =
+      minimumGrade;
+
+    $('passesInput').value =
+      passes;
+
+    $('thicknessInput').value =
+      geoData.espesorCm;
+
+    $('pass-counter').textContent =
+      `0 / ${passes}`;
+
+    $('progress-fill').style.width = '0%';
+
+    $('progress-caption').textContent =
+      geoData.referencia;
+  }
+
+  // ==========================================================
+  // FIN PARTE 2
+  // ==========================================================
+  // ==========================================================
+// LIMPIEZA DE ELEMENTOS VISUALES
+// ==========================================================
+
+function removeGroup(group) {
+
+    if (!group) return;
+
+    scene.remove(group);
+
+    group.traverse(object => {
+
+      if (object.geometry) {
+        object.geometry.dispose();
+      }
+
+      if (object.material) {
+
+        if (Array.isArray(object.material)) {
+          object.material.forEach(m => m.dispose());
+        } else {
+          object.material.dispose();
+        }
+      }
+    });
+  }
+
+  function clearFailureVisuals() {
+
+    removeGroup(failureGroup);
+    removeGroup(solutionGroup);
+
+    failureGroup = null;
+    solutionGroup = null;
+  }
+
+  // ==========================================================
+  // REINICIO DE EQUIPOS DE RECUPERACIÓN
+  // ==========================================================
+
+  function hideRepairEquipment() {
+
+    scarifier.visible = false;
+    waterTruck.visible = false;
+    grader.visible = false;
+    densityTechnician.visible = false;
+    roller.visible = false;
+  }
+
+  function resetRepairEquipment() {
+
+    hideRepairEquipment();
+
+    scarifier.position.set(
+      0,
+      BASE_TOP,
+      ROAD.startZ - 7
+    );
+
+    waterTruck.position.set(
+      0,
+      BASE_TOP,
+      ROAD.startZ - 7
+    );
+
+    grader.position.set(
+      0,
+      BASE_TOP,
+      ROAD.startZ - 7
+    );
+
+    densityTechnician.position.set(
+      2.2,
+      BASE_TOP,
+      0
+    );
+
+    roller.position.set(
+      0,
+      BASE_TOP,
+      ROAD.startZ
+    );
+
+    rotatingParts.forEach(({ object }) => {
+      object.rotation.x = 0;
+    });
+  }
+
+  // ==========================================================
+  // REINICIO DE CARPETA ASFÁLTICA
+  // ==========================================================
+
+  function resetAsphaltStage() {
+
+    stage = 'base';
+    pavingProgress = 0;
+
+    asphaltPaver.visible = false;
+    asphaltRoller.visible = false;
+
+    asphaltPaver.position.set(
+      0,
+      BASE_TOP,
+      ROAD.startZ + 3
+    );
+
+    asphaltRoller.position.set(
+      0,
+      ASPHALT_TOP,
+      ROAD.startZ - 8
+    );
+
+    asphaltChunks.forEach(item => {
+
+      item.mesh.visible = false;
+      item.mesh.material = asphaltFreshMaterial;
+      item.compacted = false;
+    });
+
+    asphaltRollerParts.forEach(({ object }) => {
+      object.rotation.x = 0;
+    });
+
+    roadMarkings.visible = false;
+
+    trafficCars.forEach(car => {
+      car.group.visible = false;
+    });
+  }
+
+  // ==========================================================
+  // REINICIO GENERAL
+  // ==========================================================
+
+  function resetSimulation() {
 
     isRunning = false;
     simulationFinished = false;
 
-    animationProgress = 0;
     completedPasses = 0;
-    travelDirection = 1;
+    repairPhaseTime = 0;
+    repairTestReady = false;
+    repairDirection = 1;
+
+    resetAsphaltStage();
+    resetRepairEquipment();
+
+    roller.visible = true;
 
     roller.position.set(
-        0,
-        2.7,
-        ROLLER_START_Z
+      0,
+      BASE_TOP,
+      ROAD.startZ
     );
 
-    roller.rotation.y = 0;
+    clearFailureVisuals();
 
-    // RESTABLECER SUPERFICIE
-    roadSurface.position.y = 2.25;
-    roadSurface.scale.y = 1;
+    startButton.disabled = false;
 
-    // REINICIAR RUEDAS
-    rollerWheels.forEach(wheel => {
-        wheel.rotation.x = 0;
-    });
+    startButton.textContent =
+      '▶ INICIAR COMPACTACIÓN';
 
-    // ACTUALIZAR CONTADOR
-    const progressBox =
-        document.getElementById('progress-box');
-
-    if (progressBox) {
-        progressBox.textContent =
-            `Pasadas completadas: 0 / ${passes}`;
-    }
-
-    // HABILITAR BOTÓN
-    document.getElementById(
-        'startButton'
-    ).disabled = false;
-
-  
-    // OCULTAR RESULTADO ANTERIOR
-    const statusBox = document.getElementById('status-box');
-
+    statusBox.className = '';
     statusBox.style.display = 'none';
-    statusBox.innerHTML = 'Esperando análisis...';
+    statusBox.innerHTML = '';
 
-// ELIMINAR TODAS LAS GRIETAS DE LA PRUEBA ANTERIOR
-const oldCracks = roadSurface.getObjectByName('failureCracks');
+    calculateMetrics();
 
-if (oldCracks && oldCracks.parent) {
-    oldCracks.parent.remove(oldCracks);
-}
+    $('progress-title').textContent = 'PASADAS';
 
-    // RESTAURAR LA CAPA
-    deformationAmount = 0;
+    $('progress-caption').textContent =
+      'Esperando inicio';
 
-    roadSurface.position.y = 2.25;
-    roadSurface.scale.y = 1;
+    $('pass-counter').textContent =
+      `0 / ${passes}`;
 
-    // ACTUALIZAR RESULTADOS
-    updateResult();
+    $('progress-fill').style.width = '0%';
+  }
 
-    // MANTENER OCULTO EL DIAGNÓSTICO
-    statusBox.style.display = 'none';
+  // ==========================================================
+  // ACTUALIZACIÓN DE DATOS DE COLAB
+  // ==========================================================
 
-}
+  function applyIncomingData(incoming, label) {
 
-// ------------------------------------------------------------
-// EVENTOS
-// ------------------------------------------------------------
+    geoData = {
+      ...geoData,
+      ...incoming
+    };
 
-document.getElementById(
-    'startButton'
-).addEventListener(
-    'click',
-    startSimulation
-);
+    $('project-name').textContent =
+      `Proyecto: ${geoData.proyecto}`;
 
-document.getElementById(
-    'resetButton'
-).addEventListener(
-    'click',
-    resetSimulation
-);
+    $('minimumInput').value =
+      geoData.exigencia;
 
-// ------------------------------------------------------------
-// ANIMACIÓN
-// ------------------------------------------------------------
+    $('passesInput').value =
+      geoData.pasadas;
 
+    $('thicknessInput').value =
+      geoData.espesorCm;
 
-function animateRoller() {
+    resetSimulation();
 
-    if (!isRunning) return;
+    syncIndicator.textContent =
+      `Sincronizado · ${label}`;
+  }
 
-    // VELOCIDAD DEL RODILLO
-    const speed = 0.35;
+  // ==========================================================
+  // SELECCIÓN DE REFERENCIA PROCTOR
+  // ==========================================================
 
-    // DISTANCIA DE AVANCE
-    const nextZ =
-        roller.position.z + speed * travelDirection;
+  function updateProctorReference() {
 
-    // COMPROBAR FINAL DEL RECORRIDO
-    if (
-        travelDirection === 1 &&
-        nextZ >= ROLLER_END_Z
-    ) {
+    const reference = String(
+      geoData.referencia || ''
+    ).toLowerCase();
 
-        roller.position.z = ROLLER_END_Z;
-
-        completedPasses++;
-
-        travelDirection = -1;
-
-    } else if (
-        travelDirection === -1 &&
-        nextZ <= ROLLER_START_Z
-    ) {
-
-        roller.position.z = ROLLER_START_Z;
-
-        completedPasses++;
-
-        travelDirection = 1;
-
-    } else {
-
-        roller.position.z = nextZ;
-    }
-
-    // ACTUALIZAR PROGRESO GENERAL
-    const distance =
-        ROLLER_END_Z - ROLLER_START_Z;
-
-    const currentLegProgress =
-        travelDirection === 1
-        ? (roller.position.z - ROLLER_START_Z) / distance
-        : (ROLLER_END_Z - roller.position.z) / distance;
-
-    animationProgress = Math.min(
-        (completedPasses + currentLegProgress) / passes,
-        1
+    return (
+      reference.includes('estándar') ||
+      reference.includes('estandar') ||
+      reference.includes('standard')
     );
+  }
 
-    // ACTUALIZAR CONTADOR
-    const progressBox =
-        document.getElementById('progress-box');
+  // ==========================================================
+  // VISUALIZACIÓN DE CONSECUENCIAS
+  // ==========================================================
 
-    if (progressBox) {
-        progressBox.textContent =
-            `Pasadas completadas: ${completedPasses} / ${passes}`;
-    }
+  function addCrack(points, radius = 0.025) {
 
-    // GIRO DEL TAMBOR Y RUEDAS
-    rollerWheels.forEach(wheel => {
-        wheel.rotation.x -= 0.08 * travelDirection;
-    });
+    const curve = new THREE.CatmullRomCurve3(
+      points.map(([x, z]) => {
 
-    // VIBRACIÓN DEL EQUIPO
-    roller.position.y =
-        2.7 +
-        Math.sin(animationProgress * 100) * 0.025;
-
-// DEFORMACIÓN LOCALIZADA DE LA CAPA VIAL
-const geometry = roadSurface.geometry;
-const positions = geometry.attributes.position;
-const normals = geometry.attributes.normal;
-
-const progress = Math.min(1, animationProgress);
-
-const halfWidth = geometry.parameters.width / 2;
-const halfLength = geometry.parameters.depth / 2;
-
-for (let i = 0; i < positions.count; i++) {
-
-    // Trabajar solamente sobre la cara superior
-    if (normals.getY(i) > 0.9) {
-
-        const x = originalSurfacePositions[i * 3];
-        const originalY = originalSurfacePositions[i * 3 + 1];
-        const z = originalSurfacePositions[i * 3 + 2];
-
-        // Ubicación de las huellas de las ruedas
-        const wheelTrack = Math.exp(
-            -Math.pow(
-                (Math.abs(x) - halfWidth * 0.28) /
-                (halfWidth * 0.12),
-                2
-            )
+        return new THREE.Vector3(
+          x,
+          BASE_TOP + 0.04,
+          z
         );
+      })
+    );
 
-        // Variación longitudinal de la deformación
-        const longitudinal =
-            0.35 +
-            0.65 * Math.pow(
-                Math.sin((z + halfLength) * 0.35),
-                2
-            );
+    const crack = new THREE.Mesh(
+      new THREE.TubeGeometry(
+        curve,
+        60,
+        radius,
+        6,
+        false
+      ),
+      material(0x17191b, 1)
+    );
 
-        // Profundidad de deformación
-        const depression =
-            deformationAmount *
-            0.25 *
-            progress *
-            wheelTrack *
-            longitudinal;
+    failureGroup.add(crack);
+  }
 
-        positions.setY(i, originalY - depression);
+  function addPothole(x, z, rx, rz) {
+
+    const group = new THREE.Group();
+
+    const shape = new THREE.Shape();
+
+    for (let i = 0; i < 20; i++) {
+
+      const angle =
+        (i / 20) * Math.PI * 2;
+
+      const wobble =
+        0.85 + Math.random() * 0.2;
+
+      const px =
+        Math.cos(angle) * rx * wobble;
+
+      const py =
+        Math.sin(angle) * rz * wobble;
+
+      if (i === 0) {
+        shape.moveTo(px, py);
+      } else {
+        shape.lineTo(px, py);
+      }
     }
-}
 
-geometry.attributes.position.needsUpdate = true;
+    shape.closePath();
 
-    // FINALIZAR SIMULACIÓN
-    if (completedPasses >= passes) {
+    const rim = new THREE.Mesh(
+      new THREE.ShapeGeometry(shape),
+      material(0x62574b, 1)
+    );
 
-        animationProgress = 1;
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.y = BASE_TOP + 0.035;
 
-        isRunning = false;
+    group.add(rim);
 
-        simulationFinished = true;
+    const inner = new THREE.Mesh(
+      new THREE.CircleGeometry(1, 24),
+      material(0x17191b, 1)
+    );
 
-        document.getElementById(
-            'startButton'
-        ).disabled = false;
+    inner.rotation.x = -Math.PI / 2;
 
-       
-if (currentGrade >= minimumGrade) {
+    inner.position.y = BASE_TOP + 0.045;
 
-    showSuccess();
+    inner.scale.set(rx * 0.65, rz * 0.65, 1);
 
-} else {
+    group.add(inner);
 
-    showFailure();
+    group.position.set(x, 0, z);
 
-}
+    failureGroup.add(group);
+  }
 
-// MOSTRAR PANEL AL TERMINAR LA SIMULACIÓN
-const controlPanel = document.getElementById('control-panel');
+  function addFailureVisuals() {
 
-if (controlPanel) {
-    controlPanel.style.display = '';
-}
-}
-} // Cierra el bloque de finalización de la simulación
-// ------------------------------------------------------------
-// MENSAJE FINAL
-// ------------------------------------------------------------
+    if (failureGroup) return;
 
-function showSuccess() {
+    failureGroup = new THREE.Group();
 
-    const statusBox =
-    document.getElementById('status-box');
+    failureGroup.name =
+      'Consecuencias de compactación insuficiente';
 
-statusBox.className = 'good';
-statusBox.style.display = 'block';
+    scene.add(failureGroup);
+
+    // Ahuellamientos.
+    const rutMaterial = new THREE.MeshStandardMaterial({
+      color: 0x34383b,
+      transparent: true,
+      opacity: 0.75,
+      roughness: 1
+    });
+
+    for (const x of [-2.5, 2.5]) {
+
+      const rut = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          0.65,
+          0.035,
+          65
+        ),
+        rutMaterial
+      );
+
+      rut.position.set(
+        x,
+        BASE_TOP + 0.03,
+        0
+      );
+
+      failureGroup.add(rut);
+    }
+
+    // Grietas representativas.
+    addCrack([
+      [-4, -25],
+      [-3.4, -22],
+      [-3.8, -19],
+      [-2.7, -16],
+      [-3.1, -13]
+    ]);
+
+    addCrack([
+      [-3.8, -19],
+      [-2.1, -20],
+      [-1.4, -23]
+    ], 0.018);
+
+    addCrack([
+      [1.2, -8],
+      [2.2, -5],
+      [1.6, -2],
+      [2.8, 1],
+      [2.4, 5]
+    ]);
+
+    addCrack([
+      [2.1, -3],
+      [0.8, 0],
+      [0.4, 3]
+    ], 0.018);
+
+    addCrack([
+      [-1.5, 17],
+      [-0.4, 20],
+      [-0.8, 23],
+      [0.6, 26]
+    ]);
+
+    // Baches.
+    addPothole(-3.7, -31, 0.9, 1.2);
+    addPothole(3.6, 13, 0.8, 1.1);
+    addPothole(-1.4, 34, 0.65, 0.8);
+  }
+
+  // ==========================================================
+  // GUÍAS VISUALES DE SOLUCIÓN
+  // ==========================================================
+
+  function addSolutionVisuals() {
+
+    if (solutionGroup) return;
+
+    solutionGroup = new THREE.Group();
+
+    solutionGroup.name =
+      'Intervención ingenieril';
+
+    scene.add(solutionGroup);
+
+    const guideMaterial =
+      new THREE.MeshStandardMaterial({
+        color: 0x22c7a0,
+        emissive: 0x087b63,
+        emissiveIntensity: 0.2,
+        transparent: true,
+        opacity: 0.7
+      });
+
+    for (const x of [-4.8, 4.8]) {
+
+      const line = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          0.1,
+          0.04,
+          72
+        ),
+        guideMaterial
+      );
+
+      line.position.set(
+        x,
+        BASE_TOP + 0.08,
+        0
+      );
+
+      solutionGroup.add(line);
+    }
+  }
+
+  // ==========================================================
+  // RESULTADO: COMPACTACIÓN ADECUADA
+  // ==========================================================
+
+  function showSuccess() {
+
+    statusBox.className = 'good';
+    statusBox.style.display = 'block';
 
     statusBox.innerHTML = `
-        <div class="big-check">✓</div>
+      <div class="big-check">✓</div>
 
-        <strong>COMPACTACIÓN COMPLETADA</strong>
+      <h3>¡COMPACTACIÓN SATISFACTORIA!</h3>
 
-        <p>
-        La simulación representa una condición
-        que cumple el grado mínimo establecido.
-        </p>
+      <p>
+        La capa granular alcanzó el grado de
+        compactación mínimo exigido.
+      </p>
 
-        <p>
-        <strong>${passes}</strong> pasadas
-        representadas sobre una capa de
-        <strong>${layerThickness} cm</strong>.
-        </p>
+      <div class="metrics">
 
-        <p>
-        La capa permanece estable en la
-        representación didáctica.
-        </p>
+        <div>
+          <span>Grado obtenido</span>
+          <span>${currentGrade.toFixed(2)} %</span>
+        </div>
 
-        <strong>✓ Resultado favorable</strong>
+        <div>
+          <span>Mínimo requerido</span>
+          <span>${minimumGrade.toFixed(2)} %</span>
+        </div>
+
+        <div>
+          <span>Referencia</span>
+          <span>${metrics.reference}</span>
+        </div>
+
+        <div>
+          <span>Densidad seca</span>
+          <span>${metrics.dryDensity.toFixed(3)} g/cm³</span>
+        </div>
+
+      </div>
+
+      <p>
+        <strong>DICTAMEN: CUMPLE.</strong>
+        Puede continuarse con la colocación
+        de la carpeta asfáltica, previa verificación
+        de las demás condiciones de obra.
+      </p>
+
+      <button
+        id="continueAsphaltButton"
+        class="solution"
+        type="button"
+      >
+        ▶ COLOCAR CARPETA ASFÁLTICA
+      </button>
     `;
-}
 
+    $('continueAsphaltButton').addEventListener(
+      'click',
+      startAsphaltStage
+    );
+  }
+    // ==========================================================
+  // RESULTADO: COMPACTACIÓN INSUFICIENTE
+  // ==========================================================
 
-function showFailure() {
-
-    const statusBox = document.getElementById('status-box');
+  function showFailure() {
 
     statusBox.className = 'bad';
     statusBox.style.display = 'block';
 
-    // ==========================================
-    // REPRESENTACIÓN VISUAL DE FALLA
-    // ==========================================
-
-// ELIMINAR COMPLETAMENTE LAS GRIETAS ANTERIORES
-const previousCracks = roadSurface.getObjectByName('failureCracks');
-
-if (previousCracks && previousCracks.parent) {
-    previousCracks.parent.remove(previousCracks);
-}
-
-    // Crear grupo de grietas sobre la superficie
-    const crackGroup = new THREE.Group();
-    crackGroup.name = 'failureCracks';
-
-    // Obtener dimensiones de la superficie
-    const params = roadSurface.geometry.parameters || {};
-
-    const roadWidth = params.width || 8;
-    const roadHeight = params.height || 0.3;
-    const roadDepth = params.depth || 60;
-
-    // Material oscuro para representar las grietas
-    const crackMaterial = new THREE.LineBasicMaterial({
-        color: 0x241914,
-        transparent: false
-    });
-
-    // Posición sobre la cara superior de la pista
-    const surfaceY = roadHeight / 2 + 0.025;
-
-    // Crear grietas principales y ramificaciones
-    const cracks = [
-        [
-            [-0.8, surfaceY, -17],
-            [-0.4, surfaceY, -15],
-            [-1.0, surfaceY, -13],
-            [-0.5, surfaceY, -11],
-            [0.2, surfaceY, -9]
-        ],
-        [
-            [1.5, surfaceY, -12],
-            [0.8, surfaceY, -10],
-            [1.1, surfaceY, -8],
-            [0.3, surfaceY, -6]
-        ],
-        [
-            [-1.8, surfaceY, 2],
-            [-1.0, surfaceY, 4],
-            [-1.5, surfaceY, 6],
-            [-0.7, surfaceY, 8],
-            [0.1, surfaceY, 10]
-        ],
-        [
-            [0.7, surfaceY, 8],
-            [1.6, surfaceY, 10],
-            [1.2, surfaceY, 12],
-            [2.0, surfaceY, 14]
-        ]
-    ];
-
-    cracks.forEach(points => {
-
-        const geometry = new THREE.BufferGeometry();
-
-        const vertices = points.map(
-            point => new THREE.Vector3(
-                point[0] * roadWidth / 8,
-                point[1],
-                point[2] * roadDepth / 60
-            )
-        );
-
-        geometry.setFromPoints(vertices);
-
-        const crack = new THREE.Line(
-            geometry,
-            crackMaterial
-        );
-
-        crackGroup.add(crack);
-    });
-
-    // Agregar grietas a la pista
-    roadSurface.add(crackGroup);
-
-    // ==========================================
-    // DIAGNÓSTICO GEOTÉCNICO
-    // ==========================================
-
     statusBox.innerHTML = `
-        <hr>
 
-        <h3>⚠ COMPACTACIÓN INSUFICIENTE</h3>
+      <h3>⚠ COMPACTACIÓN INSUFICIENTE</h3>
 
-        <p>
-            El grado de compactación obtenido es
-            <strong>${currentGrade.toFixed(2)} %</strong>,
-            inferior al mínimo exigido de
-            <strong>${minimumGrade.toFixed(2)} %</strong>.
-        </p>
+      <div class="metrics">
 
-        <h4>Representación del deterioro vial</h4>
+        <div>
+          <span>Resultado</span>
+          <span>${currentGrade.toFixed(2)} %</span>
+        </div>
+
+        <div>
+          <span>Mínimo exigido</span>
+          <span>${minimumGrade.toFixed(2)} %</span>
+        </div>
+
+        <div>
+          <span>Déficit</span>
+          <span>${metrics.deficit.toFixed(2)} puntos porcentuales</span>
+        </div>
+
+      </div>
+
+      <h4>Evaluación geotécnica</h4>
+
+      <ul>
+        <li>
+          Densidad seca de campo:
+          <strong>${metrics.dryDensity.toFixed(3)} g/cm³</strong>
+        </li>
+
+        <li>
+          Densidad seca máxima:
+          <strong>${metrics.maxDryDensity.toFixed(3)} g/cm³</strong>
+        </li>
+
+        <li>
+          Humedad de campo:
+          <strong>${metrics.fieldMoisture.toFixed(2)} %</strong>
+        </li>
+
+        <li>
+          Humedad óptima:
+          <strong>${metrics.optimumMoisture.toFixed(2)} %</strong>
+        </li>
+
+        <li>
+          Diferencia de humedad:
+          <strong>${metrics.moistureDifference.toFixed(2)} puntos porcentuales</strong>
+        </li>
+      </ul>
+
+      <p>
+        <strong>DICTAMEN: NO CUMPLE.</strong>
+        No se debe colocar la carpeta asfáltica
+        hasta corregir y verificar la capa granular.
+      </p>
+
+      <button
+        id="consequencesButton"
+        class="warning"
+        type="button"
+      >
+        ⚠ VER CONSECUENCIAS
+      </button>
+
+      <div id="consequences-panel" hidden>
+
+        <h4>Consecuencias posibles</h4>
 
         <ul>
-            <li>Formación de grietas superficiales.</li>
-            <li>Posibles deformaciones y ahuellamientos.</li>
-            <li>Asentamientos posteriores de la capa.</li>
-            <li>Disminución de la capacidad de soporte.</li>
-            <li>Deterioro prematuro de la superficie vial.</li>
+          <li>Mayor deformación de la capa.</li>
+          <li>Asentamientos posteriores.</li>
+          <li>Menor capacidad de soporte.</li>
+          <li>Formación de ahuellamientos.</li>
+          <li>Fisuración y deterioro prematuro.</li>
+          <li>Posibles baches y desprendimientos si se pavimenta sin corregir la deficiencia.</li>
         </ul>
 
-        <h4>Propuesta de solución ingenieril</h4>
+        <p>
+          Las fallas representadas son ilustrativas
+          y corresponden a posibles consecuencias posteriores.
+        </p>
+
+      </div>
+
+      <button
+        id="solutionsButton"
+        class="solution"
+        type="button"
+        disabled
+      >
+        ✓ VER SOLUCIONES INGENIERILES
+      </button>
+
+      <div id="solutions-panel" hidden>
+
+        <h4>Procedimiento de recuperación</h4>
 
         <ol>
-            <li>Verificar y corregir el contenido de humedad.</li>
-            <li>Comprobar el espesor de la capa compactada.</li>
-            <li>Revisar el equipo y procedimiento de compactación.</li>
-            <li>Determinar mediante tramo de prueba las condiciones adecuadas de compactación.</li>
-            <li>Realizar nuevamente el control de densidad de campo.</li>
+          <li>Escarificación de la capa deficiente.</li>
+          <li>Acondicionamiento de la humedad.</li>
+          <li>Mezclado y nivelación del material.</li>
+          <li>Recompactación con equipo adecuado.</li>
+          <li>Nuevo control de densidad de campo.</li>
         </ol>
 
         <p>
-            <strong>Dictamen: NO CUMPLE</strong>
+          Se iniciará una representación animada
+          de estas operaciones.
         </p>
 
-        <small>
-            Las grietas y deformaciones son representaciones
-            didácticas de posibles consecuencias. No constituyen
-            una predicción exacta del comportamiento del pavimento.
-        </small>
+      </div>
+
+      <p class="small-note">
+        La intervención debe verificarse mediante
+        un nuevo control de densidad de campo.
+      </p>
     `;
-}
 
-// ------------------------------------------------------------
-// ANIMACIÓN PRINCIPAL
-// ------------------------------------------------------------
+    $('consequencesButton').addEventListener('click', () => {
 
-function animate() {
+      $('consequences-panel').hidden = false;
 
-    requestAnimationFrame(animate);
+      addFailureVisuals();
 
-    controls.update();
+      $('consequencesButton').disabled = true;
+      $('solutionsButton').disabled = false;
 
-    animateRoller();
+      $('consequencesButton').textContent =
+        'CONSECUENCIAS VISUALIZADAS';
+    });
 
-    renderer.render(
-        scene,
-        camera
-    );
-}
+    $('solutionsButton').addEventListener('click', () => {
 
-animate();
+      $('solutions-panel').hidden = false;
+      $('solutionsButton').disabled = true;
+      $('solutionsButton').textContent = 'RECUPERACIÓN INICIADA';
 
-// ------------------------------------------------------------
-// RESPONSIVE
-// ------------------------------------------------------------
+      addSolutionVisuals();
 
-window.addEventListener(
-    'resize',
-    () => {
+      startEngineeringSolution();
+    });
+  }
 
-        camera.aspect =
-            window.innerWidth /
-            window.innerHeight;
+  // ==========================================================
+  // INICIO DE LA RECUPERACIÓN INGENIERIL
+  // ==========================================================
 
-        camera.updateProjectionMatrix();
+  function startEngineeringSolution() {
 
-        renderer.setSize(
-            window.innerWidth,
-            window.innerHeight
-        );
+    if (isRunning) return;
+
+    // Retira las fallas, pero conserva las guías verdes de la solución.
+    removeGroup(failureGroup);
+    failureGroup = null;
+
+    isRunning = true;
+    simulationFinished = false;
+
+    completedPasses = 0;
+    repairDirection = 1;
+    repairPhaseTime = 0;
+    repairTestReady = false;
+
+    startButton.disabled = true;
+
+    startButton.textContent =
+      'RECUPERANDO CAPA...';
+
+    // Determinar el tipo de acondicionamiento.
+    if (
+      metrics.fieldMoisture <
+      metrics.optimumMoisture - 0.2
+    ) {
+
+      stage = 'repairScarify';
+      setRepairPhase(
+        'repairScarify',
+        'ETAPA 1 · ESCARIFICACIÓN',
+        'El equipo escarifica la capa granular deficiente para aflojar el material y permitir su acondicionamiento.',
+        scarifier
+      );
+
+    } else if (
+      metrics.fieldMoisture >
+      metrics.optimumMoisture + 0.2
+    ) {
+
+      stage = 'repairScarify';
+      setRepairPhase(
+        'repairScarify',
+        'ETAPA 1 · ESCARIFICACIÓN',
+        'Se afloja la capa granular para facilitar el mezclado y la aireación del material.',
+        scarifier
+      );
+
+    } else {
+
+      stage = 'repairScarify';
+      setRepairPhase(
+        'repairScarify',
+        'ETAPA 1 · ESCARIFICACIÓN',
+        'Se afloja el material para permitir su homogeneización y posterior recompactación.',
+        scarifier
+      );
     }
-);
+  }
+
+  // ==========================================================
+  // CONFIGURACIÓN DE CADA ETAPA
+  // ==========================================================
+
+  function setRepairPhase(
+    phase,
+    title,
+    description,
+    vehicle = null
+  ) {
+
+    stage = phase;
+    repairPhaseTime = 0;
+
+    hideRepairEquipment();
+
+    if (vehicle) {
+
+      vehicle.position.set(
+        0,
+        BASE_TOP,
+        ROAD.startZ - 7
+      );
+
+      vehicle.visible = true;
+    }
+
+    statusBox.className = 'good';
+    statusBox.style.display = 'block';
+
+    statusBox.innerHTML = `
+
+      <h3>${title}</h3>
+
+      <p>${description}</p>
+
+      <p id="repair-detail">
+        <strong>Intervención en ejecución...</strong>
+      </p>
+
+      <p class="small-note">
+        Esta es una representación visual del
+        procedimiento de recuperación.
+      </p>
+    `;
+
+    $('progress-title').textContent =
+      'RECUPERACIÓN';
+
+    $('pass-counter').textContent = '0 %';
+
+    $('progress-fill').style.width = '0%';
+
+    $('progress-caption').textContent =
+      title;
+  }
+
+  // ==========================================================
+  // DESPLAZAMIENTO DE EQUIPOS DE RECUPERACIÓN
+  // ==========================================================
+
+  function moveRepairVehicle(vehicle, delta) {
+
+    const oldZ = vehicle.position.z;
+
+    vehicle.position.z +=
+      13 * Math.min(delta, 0.05);
+
+    const progressValue = Math.min(
+      100,
+      (
+        (vehicle.position.z - (ROAD.startZ - 7)) /
+        (ROAD.length + 14)
+      ) * 100
+    );
+
+    $('pass-counter').textContent =
+      `${Math.round(progressValue)} %`;
+
+    $('progress-fill').style.width =
+      `${progressValue}%`;
+
+    return (
+      vehicle.position.z >= ROAD.endZ + 7
+    );
+  }
+
+  // ==========================================================
+  // ETAPA 2: CORRECCIÓN DE HUMEDAD
+  // ==========================================================
+
+  function startMoistureCorrection() {
+
+    hideRepairEquipment();
+
+    if (
+      metrics.fieldMoisture <
+      metrics.optimumMoisture - 0.2
+    ) {
+
+      setRepairPhase(
+        'repairWater',
+        'ETAPA 2 · INCORPORACIÓN DE AGUA',
+        'La humedad de campo está por debajo de la óptima. El camión cisterna distribuye agua para acondicionar el material.',
+        waterTruck
+      );
+
+    } else if (
+      metrics.fieldMoisture >
+      metrics.optimumMoisture + 0.2
+    ) {
+
+      setRepairPhase(
+        'repairDry',
+        'ETAPA 2 · AIREACIÓN DEL MATERIAL',
+        'La humedad supera la óptima. Se remueve y airea el material para facilitar su secado.',
+        grader
+      );
+
+    } else {
+
+      setRepairPhase(
+        'repairGrade',
+        'ETAPA 3 · MEZCLADO Y NIVELACIÓN',
+        'La humedad está próxima a la óptima. Se homogeniza y regulariza el material antes de la recompactación.',
+        grader
+      );
+    }
+  }
+
+  // ==========================================================
+  // ETAPA 4: RECOMPACTACIÓN
+  // ==========================================================
+
+  function startRepairCompaction() {
+
+    completedPasses = 0;
+    repairDirection = 1;
+
+    roller.position.set(
+      0,
+      BASE_TOP,
+      ROAD.startZ
+    );
+
+    roller.visible = true;
+
+    rotatingParts.forEach(({ object }) => {
+      object.rotation.x = 0;
+    });
+
+    setRepairPhase(
+      'repairRecompact',
+      'ETAPA 4 · RECOMPACTACIÓN',
+      'El rodillo vibratorio vuelve a recorrer la capa granular mediante las pasadas establecidas.'
+    );
+
+    roller.visible = true;
+
+    $('progress-title').textContent =
+      'RECOMPACTACIÓN';
+
+    $('pass-counter').textContent =
+      `0 / ${passes}`;
+
+    $('progress-caption').textContent =
+      'Recompactando material granular';
+  }
+
+  // ==========================================================
+  // ETAPA 5: CONTROL DE DENSIDAD
+  // ==========================================================
+
+  function startRepairTesting() {
+
+    hideRepairEquipment();
+
+    setRepairPhase(
+      'repairTesting',
+      'ETAPA 5 · CONTROL DE DENSIDAD DE CAMPO',
+      'El personal técnico realiza una nueva comprobación de densidad para verificar la calidad de la capa.',
+      densityTechnician
+    );
+
+    repairPhaseTime = 0;
+    repairTestReady = false;
+
+    $('progress-caption').textContent =
+      'Control de calidad en ejecución';
+  }
+  // ==========================================================
+// CONTROL DE REENSAYO DESPUÉS DE LA RECOMPACTACIÓN
+// ==========================================================
+
+function showRetestForm() {
+    if (repairTestReady) return;
+    repairTestReady = true;
+    densityTechnician.visible = false;
+  
+    statusBox.className = 'good';
+    statusBox.style.display = 'block';
+    statusBox.innerHTML = `
+      <h3>ETAPA 5 · REGISTRO DEL NUEVO ENSAYO</h3>
+      <p>La capa fue recompactada. El técnico debe registrar el nuevo resultado del control de densidad de campo.</p>
+      <div class="metrics">
+        <div><span>Densidad seca máxima (${metrics.reference})</span><span>${metrics.maxDryDensity.toFixed(3)} g/cm³</span></div>
+        <div><span>Grado mínimo exigido</span><span>${minimumGrade.toFixed(2)} %</span></div>
+        <div><span>Resultado anterior</span><span>${currentGrade.toFixed(2)} %</span></div>
+      </div>
+      <div class="field">
+        <label for="retestDensityInput">Nueva densidad seca de campo (g/cm³)</label>
+        <input id="retestDensityInput" type="number" min="0.1" max="5" step="0.001" value="${metrics.dryDensity.toFixed(3)}">
+      </div>
+      <button id="registerRetestButton" class="solution" type="button">✓ REGISTRAR NUEVO ENSAYO</button>
+      <p class="small-note">No se aumenta la densidad automáticamente. Introduce el valor obtenido en el nuevo ensayo de campo. Si todavía no tienes ese resultado, conserva el valor anterior y la capa seguirá rechazada.</p>
+    `;
+  
+    $('registerRetestButton').addEventListener('click', () => {
+      const input = $('retestDensityInput');
+      const newDryDensity = numeric(input.value, NaN);
+  
+      if (!Number.isFinite(newDryDensity) || newDryDensity <= 0) {
+        input.setCustomValidity('Ingresa una densidad seca válida mayor que cero.');
+        input.reportValidity();
+        return;
+      }
+  
+      input.setCustomValidity('');
+  
+      // El resultado solo cambia cuando se registra explícitamente un nuevo ensayo.
+      geoData.rhoSeca = newDryDensity;
+      currentGrade = (newDryDensity / metrics.maxDryDensity) * 100;
+      metrics.dryDensity = newDryDensity;
+      metrics.deficit = Math.max(0, minimumGrade - currentGrade);
+      metrics.moistureDifference = Math.abs(
+        metrics.fieldMoisture - metrics.optimumMoisture
+      );
+  
+      $('gradeInput').value = currentGrade.toFixed(2);
+      repairTestReady = false;
+      isRunning = false;
+      simulationFinished = true;
+      stage = 'base';
+  
+      if (currentGrade >= minimumGrade) {
+        removeGroup(solutionGroup);
+        solutionGroup = null;
+        startButton.disabled = false;
+        startButton.textContent = '▶ CONTINUAR CON CARPETA ASFÁLTICA';
+        showSuccess();
+      } else {
+        removeGroup(solutionGroup);
+        solutionGroup = null;
+        clearFailureVisuals();
+        startButton.disabled = false;
+        startButton.textContent = 'REVISAR Y REPETIR SOLUCIÓN';
+        showFailure();
+      }
+  
+      updateProgress();
+    });
+  }
+  
+  // ==========================================================
+  // ANIMACIÓN DE LAS ETAPAS DE SOLUCIÓN INGENIERIL
+  // ==========================================================
+  
+  function nextRepairGradingPhase(message = 'El material se homogeniza y se regulariza antes de compactar.') {
+    setRepairPhase(
+      'repairGrade',
+      'ETAPA 3 · MEZCLADO Y NIVELACIÓN',
+      message,
+      grader
+    );
+  }
+  
+  function finishRepairVehiclePhase() {
+    if (stage === 'repairScarify') {
+      startMoistureCorrection();
+      return;
+    }
+  
+    if (stage === 'repairWater') {
+      nextRepairGradingPhase('Después de incorporar agua de forma controlada, se mezcla el material para distribuir la humedad de manera uniforme.');
+      return;
+    }
+  
+    if (stage === 'repairDry') {
+      nextRepairGradingPhase('Después de airear el material para reducir el exceso de humedad, se mezcla y nivela la capa.');
+      return;
+    }
+  
+    if (stage === 'repairGrade') {
+      startRepairCompaction();
+    }
+  }
+  
+  function animateRepairCompaction(delta) {
+    const speed = 14.5;
+    const step = speed * Math.min(delta, 0.05);
+    const oldZ = roller.position.z;
+    let nextZ = oldZ + step * repairDirection;
+    let movedDistance = Math.abs(nextZ - oldZ);
+  
+    if (repairDirection > 0 && nextZ >= ROAD.endZ) {
+      movedDistance = Math.abs(ROAD.endZ - oldZ);
+      roller.position.z = ROAD.endZ;
+      completedPasses += 1;
+  
+      if (completedPasses >= passes) {
+        updateRepairPassProgress();
+        startRepairTesting();
+        return;
+      }
+      repairDirection = -1;
+    } else if (repairDirection < 0 && nextZ <= ROAD.startZ) {
+      movedDistance = Math.abs(ROAD.startZ - oldZ);
+      roller.position.z = ROAD.startZ;
+      completedPasses += 1;
+  
+      if (completedPasses >= passes) {
+        updateRepairPassProgress();
+        startRepairTesting();
+        return;
+      }
+      repairDirection = 1;
+    } else {
+      roller.position.z = nextZ;
+    }
+  
+    roller.position.y = BASE_TOP + Math.sin(performance.now() * 0.025) * 0.012;
+    for (const part of rotatingParts) {
+      part.object.rotation.x -= (movedDistance / part.radius) * repairDirection;
+    }
+  
+    updateRepairPassProgress();
+  }
+  
+  function updateRepairPassProgress() {
+    const fraction = Math.min(completedPasses / passes, 1);
+    $('progress-title').textContent = 'RECOMPACTACIÓN';
+    $('pass-counter').textContent = `${completedPasses} / ${passes}`;
+    $('progress-fill').style.width = `${fraction * 100}%`;
+    $('progress-caption').textContent = 'Recompactando capa granular';
+  }
+  
+  function animateRepairStage(delta) {
+    repairPhaseTime += Math.min(delta, 0.05);
+  
+    if (
+      stage === 'repairScarify' ||
+      stage === 'repairWater' ||
+      stage === 'repairDry' ||
+      stage === 'repairGrade'
+    ) {
+      const vehicleByStage = {
+        repairScarify: scarifier,
+        repairWater: waterTruck,
+        repairDry: grader,
+        repairGrade: grader
+      };
+  
+      const vehicle = vehicleByStage[stage];
+      if (vehicle && moveRepairVehicle(vehicle, delta)) {
+        finishRepairVehiclePhase();
+      }
+      return;
+    }
+  
+    if (stage === 'repairRecompact') {
+      animateRepairCompaction(delta);
+      return;
+    }
+  
+    if (stage === 'repairTesting') {
+      if (repairPhaseTime >= 3.0) {
+        showRetestForm();
+      }
+    }
+  }
+  
+  // ==========================================================
+  // COMPACTACIÓN INICIAL DE LA BASE GRANULAR
+  // ==========================================================
+  
+  
+  function updateProgress() {
+    if (stage === 'repairRecompact') {
+      updateRepairPassProgress();
+      return;
+    }
+  
+    if (
+      stage === 'paving' ||
+      stage === 'asphaltRolling' ||
+      stage === 'asphaltFinished'
+    ) {
+      return;
+    }
+  
+    const fraction = Math.min(completedPasses / Math.max(passes, 1), 1);
+    $('progress-title').textContent = 'PASADAS';
+    $('pass-counter').textContent = `${completedPasses} / ${passes}`;
+    $('progress-fill').style.width = `${fraction * 100}%`;
+    $('progress-caption').textContent = simulationFinished
+      ? 'Base granular evaluada'
+      : (isRunning ? `Recorrido ${completedPasses + 1} de ${passes}` : geoData.referencia);
+  }
+  
+  function finishInitialCompaction() {
+    if (simulationFinished) return;
+  
+    isRunning = false;
+    simulationFinished = true;
+    stage = 'base';
+  
+    startButton.disabled = false;
+    startButton.textContent = '▶ REPETIR COMPACTACIÓN';
+  
+    clearFailureVisuals();
+  
+    if (currentGrade >= minimumGrade) {
+      showSuccess();
+    } else {
+      showFailure();
+    }
+  
+    updateProgress();
+  }
+  
+  function animateInitialCompaction(delta) {
+    const speed = 15.5;
+    const step = speed * Math.min(delta, 0.05);
+    const oldZ = roller.position.z;
+    const nextZ = oldZ + step * direction;
+    let movedDistance = Math.abs(nextZ - oldZ);
+  
+    if (direction > 0 && nextZ >= ROAD.endZ) {
+      movedDistance = Math.abs(ROAD.endZ - oldZ);
+      roller.position.z = ROAD.endZ;
+      completedPasses += 1;
+  
+      if (completedPasses >= passes) {
+        updateProgress();
+        finishInitialCompaction();
+        return;
+      }
+      direction = -1;
+    } else if (direction < 0 && nextZ <= ROAD.startZ) {
+      movedDistance = Math.abs(ROAD.startZ - oldZ);
+      roller.position.z = ROAD.startZ;
+      completedPasses += 1;
+  
+      if (completedPasses >= passes) {
+        updateProgress();
+        finishInitialCompaction();
+        return;
+      }
+      direction = 1;
+    } else {
+      roller.position.z = nextZ;
+    }
+  
+    roller.position.y = BASE_TOP + Math.sin(performance.now() * 0.025) * 0.018;
+    for (const part of rotatingParts) {
+      part.object.rotation.x -= (movedDistance / part.radius) * direction;
+    }
+    updateProgress();
+  }
+  
+  // ==========================================================
+  // CIRCULACIÓN DE VEHÍCULOS COMO SEÑAL VISUAL DE APROBACIÓN
+  // ==========================================================
+  
+  function startTraffic() {
+    trafficCars.forEach((car, index) => {
+      car.group.visible = true;
+      car.group.position.set(
+        car.lane,
+        ASPHALT_TOP,
+        ROAD.startZ + index * 18
+      );
+    });
+  }
+  
+  function animateTrafficCars(delta) {
+    if (stage !== 'asphaltFinished') return;
+  
+    for (const car of trafficCars) {
+      car.group.position.z += car.speed * car.direction * Math.min(delta, 0.05);
+  
+      if (car.direction > 0 && car.group.position.z > ROAD.endZ + 7) {
+        car.group.position.z = ROAD.startZ - 7;
+      } else if (car.direction < 0 && car.group.position.z < ROAD.startZ - 7) {
+        car.group.position.z = ROAD.endZ + 7;
+      }
+    }
+  }
+  
+  // ==========================================================
+  // INICIO, REINICIO Y EVENTOS DE INTERFAZ
+  // ==========================================================
+  
+  function startSimulation() {
+    if (isRunning) return;
+  
+    resetAsphaltStage();
+    resetRepairEquipment();
+    calculateMetrics();
+    clearFailureVisuals();
+  
+    statusBox.className = '';
+    statusBox.style.display = 'none';
+    statusBox.innerHTML = '';
+  
+    isRunning = true;
+    simulationFinished = false;
+    completedPasses = 0;
+    direction = 1;
+    stage = 'base';
+  
+    roller.position.set(0, BASE_TOP, ROAD.startZ);
+    roller.visible = true;
+    roller.rotation.set(0, 0, 0);
+    rotatingParts.forEach(({ object }) => {
+      object.rotation.x = 0;
+    });
+  
+    startButton.disabled = true;
+    startButton.textContent = 'COMPACTANDO BASE GRANULAR...';
+  
+    $('progress-title').textContent = 'PASADAS';
+    $('progress-caption').textContent = 'Compactando base granular';
+    updateProgress();
+  }
+  
+  
+  // ==========================================================
+  // COLOCACIÓN Y COMPACTACIÓN DE LA CARPETA ASFÁLTICA
+  // ==========================================================
+  
+  function startAsphaltStage() {
+    if (isRunning || currentGrade < minimumGrade) return;
+  
+    clearFailureVisuals();
+    resetRepairEquipment();
+  
+    stage = 'paving';
+    isRunning = true;
+    simulationFinished = false;
+    pavingProgress = 0;
+  
+    asphaltChunks.forEach(item => {
+      item.mesh.visible = false;
+      item.mesh.material = asphaltFreshMaterial;
+      item.compacted = false;
+    });
+  
+    roadMarkings.visible = false;
+    trafficCars.forEach(car => { car.group.visible = false; });
+  
+    asphaltPaver.position.set(0, BASE_TOP, ROAD.startZ + 3);
+    asphaltPaver.visible = true;
+  
+    asphaltRoller.position.set(0, ASPHALT_TOP, ROAD.startZ - 8);
+    asphaltRoller.visible = false;
+    asphaltRollerParts.forEach(({ object }) => {
+      object.rotation.x = 0;
+    });
+  
+    startButton.disabled = true;
+    startButton.textContent = 'COLOCANDO CARPETA ASFÁLTICA...';
+  
+    statusBox.className = 'good';
+    statusBox.style.display = 'block';
+    statusBox.innerHTML = `
+      <h3>ETAPA 2 · COLOCACIÓN DE CARPETA ASFÁLTICA</h3>
+      <p>La base granular alcanzó el grado exigido. La pavimentadora comienza a extender la mezcla asfáltica y el rodillo tándem compactará detrás de ella.</p>
+      <p id="asphalt-stage-status"><strong>Estado:</strong> extendido de mezcla en ejecución.</p>
+      <p class="small-note">Representación didáctica: la obra real requiere controles independientes de mezcla, temperatura, espesor y densidad.</p>
+    `;
+  
+    $('progress-title').textContent = 'ASFALTO';
+    $('pass-counter').textContent = '0 %';
+    $('progress-fill').style.width = '0%';
+    $('progress-caption').textContent = 'Pavimentadora extendiendo mezcla';
+  }
+  
+  function revealAsphaltBehindPaver() {
+    const screedZ = asphaltPaver.position.z - 2.4;
+  
+    for (const item of asphaltChunks) {
+      if (item.centerZ <= screedZ + 0.2) {
+        item.mesh.visible = true;
+        item.mesh.material = asphaltFreshMaterial;
+      }
+    }
+  }
+  
+  function compactAsphaltBehindRoller() {
+    const rearEdge = asphaltRoller.position.z - 1.9;
+  
+    for (const item of asphaltChunks) {
+      if (item.mesh.visible && !item.compacted && item.centerZ <= rearEdge) {
+        item.mesh.material = asphaltMaterial;
+        item.compacted = true;
+      }
+    }
+  }
+  
+  function animateAsphaltStage(delta) {
+    const step = 6.5 * Math.min(delta, 0.05);
+  
+    if (stage === 'paving') {
+      asphaltPaver.position.z = Math.min(
+        ROAD.endZ + 3,
+        asphaltPaver.position.z + step
+      );
+  
+      revealAsphaltBehindPaver();
+  
+      const targetRollerZ = asphaltPaver.position.z - 8;
+      if (targetRollerZ >= ROAD.startZ - 0.5) {
+        asphaltRoller.visible = true;
+        const oldZ = asphaltRoller.position.z;
+        asphaltRoller.position.z = Math.max(
+          oldZ,
+          Math.min(targetRollerZ, ROAD.endZ)
+        );
+  
+        const distance = asphaltRoller.position.z - oldZ;
+        for (const part of asphaltRollerParts) {
+          part.object.rotation.x -= distance / part.radius;
+        }
+        compactAsphaltBehindRoller();
+      }
+  
+      pavingProgress = Math.min(
+        100,
+        ((asphaltPaver.position.z - (ROAD.startZ + 3)) / ROAD.length) * 100
+      );
+  
+      $('pass-counter').textContent = `${Math.round(pavingProgress)} %`;
+      $('progress-fill').style.width = `${pavingProgress}%`;
+      $('progress-caption').textContent = 'Pavimentadora extendiendo mezcla';
+  
+      if (asphaltPaver.position.z >= ROAD.endZ + 2.95) {
+        stage = 'asphaltRolling';
+        asphaltPaver.visible = false;
+        asphaltRoller.visible = true;
+  
+        const label = $('asphalt-stage-status');
+        if (label) {
+          label.innerHTML = '<strong>Estado:</strong> rodillo tándem completando la compactación de la carpeta asfáltica.';
+        }
+  
+        $('progress-caption').textContent = 'Rodillo tándem compactando';
+      }
+      return;
+    }
+  
+    if (stage === 'asphaltRolling') {
+      const oldZ = asphaltRoller.position.z;
+      asphaltRoller.position.z = Math.min(
+        ROAD.endZ + 2.5,
+        oldZ + step * 1.15
+      );
+  
+      const distance = asphaltRoller.position.z - oldZ;
+      for (const part of asphaltRollerParts) {
+        part.object.rotation.x -= distance / part.radius;
+      }
+  
+      compactAsphaltBehindRoller();
+  
+      pavingProgress = Math.min(
+        100,
+        88 + ((asphaltRoller.position.z - (ROAD.endZ - 8)) / 10) * 12
+      );
+  
+      $('pass-counter').textContent = `${Math.round(pavingProgress)} %`;
+      $('progress-fill').style.width = `${pavingProgress}%`;
+      $('progress-caption').textContent = 'Compactación final del asfalto';
+  
+      if (asphaltRoller.position.z >= ROAD.endZ + 2.45) {
+        finishAsphaltStage();
+      }
+    }
+  }
+  
+  function finishAsphaltStage() {
+    stage = 'asphaltFinished';
+    isRunning = false;
+    simulationFinished = true;
+  
+    asphaltChunks.forEach(item => {
+      item.mesh.visible = true;
+      item.mesh.material = asphaltMaterial;
+      item.compacted = true;
+    });
+  
+    roadMarkings.visible = true;
+    asphaltRoller.visible = false;
+    asphaltPaver.visible = false;
+    startTraffic();
+  
+    statusBox.className = 'good';
+    statusBox.style.display = 'block';
+    statusBox.innerHTML = `
+      <div class="big-check">✓</div>
+      <h3>¡VÍA HABILITADA PARA EL TRÁNSITO!</h3>
+      <p>La carpeta asfáltica fue extendida y compactada en esta representación didáctica.</p>
+      <p><strong>La circulación de vehículos representa la aprobación visual de la secuencia simulada.</strong></p>
+      <p class="small-note">En una obra real, la habilitación requiere los controles y tiempos de apertura especificados para la mezcla asfáltica. Esta animación no sustituye ensayos de densidad, temperatura, espesor ni aceptación de obra.</p>
+    `;
+  
+    startButton.disabled = false;
+    startButton.textContent = '✓ PROCESO COMPLETADO';
+    $('progress-title').textContent = 'ASFALTO';
+    $('pass-counter').textContent = '100 %';
+    $('progress-fill').style.width = '100%';
+    $('progress-caption').textContent = 'Carpeta asfáltica terminada';
+  }
+  
+  // Los controles se conectan después de crear toda la interfaz.
+  startButton.addEventListener('click', startSimulation);
+  resetButton.addEventListener('click', resetSimulation);
+  
+  $('minimumInput').addEventListener('change', () => {
+    if (isRunning) return;
+    geoData.exigencia = numeric($('minimumInput').value, defaults.exigencia);
+    calculateMetrics();
+  });
+  
+  $('passesInput').addEventListener('change', () => {
+    if (isRunning) return;
+    geoData.pasadas = numeric($('passesInput').value, defaults.pasadas);
+    calculateMetrics();
+    updateProgress();
+  });
+  
+  $('thicknessInput').addEventListener('change', () => {
+    if (isRunning) return;
+    geoData.espesorCm = numeric($('thicknessInput').value, defaults.espesorCm);
+    $('thicknessInput').value = geoData.espesorCm;
+  });
+  
+  // ==========================================================
+  // SINCRONIZACIÓN CON COMPACTA LAB 360 / GOOGLE COLAB
+  // ==========================================================
+  
+  function readUrlParameters() {
+    const params = Object.fromEntries(new URLSearchParams(window.location.search).entries());
+    return parseIncoming(params);
+  }
+  
+  const initialIncoming = readUrlParameters();
+  if (Object.keys(initialIncoming).length > 0) {
+    applyIncomingData(initialIncoming, 'parámetros recibidos desde COMPACTA LAB 360');
+  } else {
+    calculateMetrics();
+    resetSimulation();
+    syncIndicator.textContent = 'Parámetros predeterminados · esperando COMPACTA LAB 360';
+  }
+  
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    if (!event.data || typeof event.data !== 'object') return;
+    if (!['GEOCOMPACT_UPDATE', 'GEOCOMPACT_DATA'].includes(event.data.type)) return;
+  
+    const payload =
+      event.data.params ||
+      event.data.data ||
+      event.data.payload ||
+      {};
+  
+    const incoming = parseIncoming(payload);
+    if (Object.keys(incoming).length > 0) {
+      applyIncomingData(incoming, 'actualización recibida desde COMPACTA LAB 360');
+    }
+  });
+  
+  if (window.parent !== window) {
+    window.parent.postMessage({ type: 'ROAD_SIMULATOR_READY' }, '*');
+  }
+  
+  // ==========================================================
+  // BUCLE PRINCIPAL DE THREE.JS
+  // ==========================================================
+  
+  function animate() {
+    requestAnimationFrame(animate);
+  
+    clock.update();
+    const delta = clock.getDelta();
+  
+    controls.update();
+  
+    if (isRunning) {
+      if (
+        stage === 'repairScarify' ||
+        stage === 'repairWater' ||
+        stage === 'repairDry' ||
+        stage === 'repairGrade' ||
+        stage === 'repairRecompact' ||
+        stage === 'repairTesting'
+      ) {
+        animateRepairStage(delta);
+      } else if (stage === 'paving' || stage === 'asphaltRolling') {
+        animateAsphaltStage(delta);
+      } else if (stage === 'base') {
+        animateInitialCompaction(delta);
+      }
+    }
+  
+    animateTrafficCars(delta);
+    renderer.render(scene, camera);
+  }
+  
+  animate();
+  
+  // ==========================================================
+  // AJUSTE RESPONSIVE
+  // ==========================================================
+  
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  });
+  
+  // Mensaje inicial en la interfaz.
+  syncIndicator.textContent =
+    syncIndicator.textContent || 'Escena 3D lista · esperando parámetros';
